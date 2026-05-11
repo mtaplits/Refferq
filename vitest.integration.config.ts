@@ -10,7 +10,7 @@ export default defineConfig({
         // time it's accessed. The setup file truncates between tests.
         env: {
             DATABASE_URL: 'postgresql://marshallt@localhost:5432/refferq_test',
-            // Stub crypto provider so the SHKeeper adapter doesn't reach out.
+            // Stub crypto provider so no real network/provider call goes out.
             CRYPTO_DISBURSEMENT_PROVIDER: 'stub',
             // Webhook signing is bypassed by api-key auth in tests
             // (we seed an ApiKey row in the setup helper).

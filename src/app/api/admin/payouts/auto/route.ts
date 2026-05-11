@@ -139,8 +139,8 @@ export async function POST(request: NextRequest) {
           }
 
           // Atomic invariant: link commissions to payout + decrement balance
-          // by their exact sum. Commissions stay APPROVED until the SHKeeper
-          // callback flips them to PAID; on provider failure we revert both.
+          // by their exact sum. Commissions stay APPROVED until the provider
+          // IPN callback flips them to PAID; on provider failure we revert both.
           const payout = await prisma.payout.create({
             data: {
               affiliateId: affiliate.id,
@@ -165,8 +165,7 @@ export async function POST(request: NextRequest) {
           try {
             const provider = getProvider();
             const baseUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, '') || '';
-            const callbackSecret = process.env.SHKEEPER_CALLBACK_SECRET || '';
-            const callbackUrl = `${baseUrl}/api/webhook/payout-status${callbackSecret ? `?secret=${encodeURIComponent(callbackSecret)}` : ''}`;
+            const callbackUrl = `${baseUrl}/api/webhook/nowpayments`;
             const sendResult = await provider.send({
               toAddress: walletAddress,
               amountCents: payoutAmountCents,

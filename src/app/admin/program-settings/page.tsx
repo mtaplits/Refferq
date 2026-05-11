@@ -410,7 +410,7 @@ export default function ProgramSettingsPage() {
                 <Coins className="mt-0.5 h-5 w-5 text-muted-foreground" />
                 <div>
                   <div className="font-medium">Crypto</div>
-                  <p className="text-xs text-muted-foreground">USDT on-chain via your SHKeeper deployment. Configure SHKEEPER_* env vars to enable disbursement.</p>
+                  <p className="text-xs text-muted-foreground">USDT on-chain via NowPayments. Configure NOWPAYMENTS_* env vars to enable disbursement.</p>
                 </div>
               </button>
             </div>

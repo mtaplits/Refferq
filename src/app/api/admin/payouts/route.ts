@@ -196,7 +196,7 @@ export async function POST(request: NextRequest) {
     // ─── Crypto disbursement (Feature B) ───
     // USDT_ONCHAIN payouts route through the configured crypto provider.
     // The provider broadcasts the on-chain transfer and POSTs status updates
-    // to our /api/webhook/payout-status receiver; commissions stay APPROVED
+    // to our /api/webhook/nowpayments receiver; commissions stay APPROVED
     // (linked to the payout) until that callback confirms.
     const isCryptoMethod = method === 'USDT_ONCHAIN';
     let validatedWalletAddress: string | null = null;
@@ -262,7 +262,7 @@ export async function POST(request: NextRequest) {
 
     if (isCryptoMethod) {
       // Link commissions to the payout but keep them APPROVED. They flip to
-      // PAID only when the SHKeeper callback confirms on-chain success.
+      // PAID only when the provider's IPN callback confirms on-chain success.
       // Decrement balance NOW so the same commissions can't be picked up by
       // another payout — the balance invariant is `sum(APPROVED w/ payoutId=null)`.
       await prisma.commission.updateMany({
@@ -277,8 +277,7 @@ export async function POST(request: NextRequest) {
       try {
         const provider = getProvider();
         const baseUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, '') || '';
-        const callbackSecret = process.env.SHKEEPER_CALLBACK_SECRET || '';
-        const callbackUrl = `${baseUrl}/api/webhook/payout-status${callbackSecret ? `?secret=${encodeURIComponent(callbackSecret)}` : ''}`;
+        const callbackUrl = `${baseUrl}/api/webhook/nowpayments`;
         const sendResult = await provider.send({
           toAddress: validatedWalletAddress!,
           amountCents: totalAmountCents,

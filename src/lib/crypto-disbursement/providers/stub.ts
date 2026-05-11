@@ -9,7 +9,7 @@ import type {
 /**
  * Dev / test no-op provider. Doesn't talk to any network; returns a fake
  * task ID and reports `pending` from `getStatus`. Useful for local end-to-end
- * testing of the payout state machine without running a SHKeeper deployment.
+ * testing of the payout state machine without making any real provider call.
  */
 export class StubProvider implements CryptoDisbursementProvider {
     readonly id = 'stub';

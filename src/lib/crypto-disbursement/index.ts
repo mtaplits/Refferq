@@ -1,5 +1,5 @@
 import type { CryptoDisbursementProvider } from './types';
-import { ShkeeperProvider } from './providers/shkeeper';
+import { NowPaymentsProvider } from './providers/nowpayments';
 import { StubProvider } from './providers/stub';
 
 export * from './types';
@@ -8,19 +8,19 @@ let cached: CryptoDisbursementProvider | null = null;
 
 /**
  * Lazy-singleton accessor for the configured crypto-disbursement provider.
- * Reads `CRYPTO_DISBURSEMENT_PROVIDER` from env (default: 'shkeeper'). Use
+ * Reads `CRYPTO_DISBURSEMENT_PROVIDER` from env (default: 'nowpayments'). Use
  * `'stub'` for local dev so the payout flow runs without a real network.
  */
 export function getProvider(): CryptoDisbursementProvider {
     if (cached) return cached;
-    const choice = (process.env.CRYPTO_DISBURSEMENT_PROVIDER || 'shkeeper').toLowerCase();
+    const choice = (process.env.CRYPTO_DISBURSEMENT_PROVIDER || 'nowpayments').toLowerCase();
     switch (choice) {
         case 'stub':
             cached = new StubProvider();
             break;
-        case 'shkeeper':
+        case 'nowpayments':
         default:
-            cached = new ShkeeperProvider();
+            cached = new NowPaymentsProvider();
             break;
     }
     return cached;
