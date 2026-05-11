@@ -161,9 +161,13 @@ describe('SHKeeper callback receiver (Feature B)', () => {
         expect(after2?.processedAt?.getTime()).toBe(processedAt1?.getTime());
     });
 
-    it('marks failed and unlinks commissions when the provider reports failure', async () => {
+    it('marks failed, unlinks commissions, AND refunds balance', async () => {
         process.env.SHKEEPER_CALLBACK_SECRET = 'test-callback-secret';
-        const { payoutId, commissionIds } = await seedPayoutInFlight({ taskId: 'task-fail' });
+        const { payoutId, commissionIds, affiliateId } = await seedPayoutInFlight({ taskId: 'task-fail' });
+        // Balance starts at 0 (post-decrement at payout-create). After the
+        // failed callback, the payout amount (1_000) is re-credited.
+        const before = await prisma.affiliate.findUnique({ where: { id: affiliateId } });
+        expect(before?.balanceCents).toBe(0);
 
         const res = await payoutStatusReceiver(
             makeRequest('http://localhost/api/webhook/payout-status?secret=test-callback-secret', {
@@ -183,8 +187,10 @@ describe('SHKeeper callback receiver (Feature B)', () => {
         expect(payout?.providerError).toMatch(/insufficient balance/);
 
         const commissions = await prisma.commission.findMany({ where: { id: { in: commissionIds } } });
-        // Commissions stayed APPROVED (never flipped to PAID) and were unlinked.
         expect(commissions[0].status).toBe('APPROVED');
         expect(commissions[0].payoutId).toBeNull();
+
+        const after = await prisma.affiliate.findUnique({ where: { id: affiliateId } });
+        expect(after?.balanceCents).toBe(1_000); // refunded
     });
 });

@@ -135,17 +135,24 @@ export async function POST(request: NextRequest) {
                 updatedAt: now,
             },
         });
-        // Unlink commissions so they can be retried in a new payout.
+        // Refund: unlink commissions AND re-credit the affiliate's balance
+        // by the payout amount. The balance was decremented at payout-create
+        // time to maintain the `balance = sum(APPROVED w/ payoutId=null)`
+        // invariant; we restore it here so the commissions can be retried.
         await prisma.commission.updateMany({
             where: { payoutId: payout.id },
             data: { payoutId: null, updatedAt: now },
+        });
+        await prisma.affiliate.update({
+            where: { id: payout.affiliateId },
+            data: { balanceCents: { increment: payout.amountCents } },
         });
         await logAuditAction({
             actorId: 'system-webhook',
             action: 'PAYOUT_FAILED',
             objectType: 'PAYOUT',
             objectId: payout.id,
-            payload: { taskId, error: errMsg },
+            payload: { taskId, error: errMsg, refundedCents: payout.amountCents },
         });
         return NextResponse.json({ ok: true, status: 'FAILED' });
     }

@@ -22,6 +22,7 @@ async function seedApprovedCommissions(opts: {
     amountCents?: number;
 }) {
     const ids: string[] = [];
+    let totalCents = 0;
     for (let i = 0; i < opts.count; i++) {
         const conv = await prisma.conversion.create({
             data: {
@@ -44,6 +45,14 @@ async function seedApprovedCommissions(opts: {
             },
         });
         ids.push(c.id);
+        totalCents += 1_000;
+    }
+    // Maintain the balance invariant: `balance = sum(APPROVED w/ payoutId=null)`.
+    if (totalCents > 0) {
+        await prisma.affiliate.update({
+            where: { id: opts.affiliateId },
+            data: { balanceCents: { increment: totalCents } },
+        });
     }
     return ids;
 }
@@ -83,6 +92,10 @@ describe('Admin payouts CREATE (Feature B)', () => {
         });
         expect(commissions.every((c) => c.status === 'PAID')).toBe(true);
         expect(commissions.every((c) => c.payoutId === body.payout.id)).toBe(true);
+
+        // Balance invariant: started at 2000 (2 × 1000), payout decremented it.
+        const after = await prisma.affiliate.findUnique({ where: { id: a.id } });
+        expect(after?.balanceCents).toBe(0);
     });
 
     it('crypto path: validates treasury=CRYPTO and rejects when program is FIAT', async () => {
@@ -180,6 +193,11 @@ describe('Admin payouts CREATE (Feature B)', () => {
         });
         expect(commissions.every((c) => c.status === 'APPROVED')).toBe(true);
         expect(commissions.every((c) => c.payoutId === payouts[0].id)).toBe(true);
+
+        // Balance decremented at payout-create time (will be refunded on
+        // failure callback; stays 0 on success).
+        const after = await prisma.affiliate.findUnique({ where: { id: a.id } });
+        expect(after?.balanceCents).toBe(0);
     });
 
     it('rejects when a commission is still PENDING (within hold period)', async () => {

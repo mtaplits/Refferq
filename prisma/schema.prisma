@@ -102,6 +102,7 @@ model Conversion {
   commissions   Commission[]
   affiliate     Affiliate        @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
   referral      Referral?        @relation(fields: [referralId], references: [id])
+  transaction   Transaction?
 
   @@map("conversions")
 }
@@ -272,6 +273,7 @@ model Transaction {
   id              String            @id @default(cuid())
   referralId      String            @map("referral_id")
   affiliateId     String            @map("affiliate_id")
+  conversionId    String?           @unique @map("conversion_id")
   customerId      String?           @map("customer_id")
   customerName    String            @map("customer_name")
   customerEmail   String            @map("customer_email")
@@ -288,6 +290,7 @@ model Transaction {
   updatedAt       DateTime          @updatedAt @map("updated_at")
   referral        Referral          @relation(fields: [referralId], references: [id], onDelete: Cascade)
   affiliate       Affiliate         @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  conversion      Conversion?       @relation(fields: [conversionId], references: [id])
 
   @@map("transactions")
 }

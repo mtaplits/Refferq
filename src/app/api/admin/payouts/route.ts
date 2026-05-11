@@ -263,9 +263,15 @@ export async function POST(request: NextRequest) {
     if (isCryptoMethod) {
       // Link commissions to the payout but keep them APPROVED. They flip to
       // PAID only when the SHKeeper callback confirms on-chain success.
+      // Decrement balance NOW so the same commissions can't be picked up by
+      // another payout — the balance invariant is `sum(APPROVED w/ payoutId=null)`.
       await prisma.commission.updateMany({
         where: { id: { in: commissionIds } },
         data: { payoutId: payout.id, updatedAt: new Date() },
+      });
+      await prisma.affiliate.update({
+        where: { id: affiliateId },
+        data: { balanceCents: { decrement: totalAmountCents } },
       });
 
       try {
@@ -289,9 +295,14 @@ export async function POST(request: NextRequest) {
               updatedAt: new Date(),
             },
           });
+          // Refund: unlink commissions and re-credit balance.
           await prisma.commission.updateMany({
             where: { payoutId: payout.id },
             data: { payoutId: null, updatedAt: new Date() },
+          });
+          await prisma.affiliate.update({
+            where: { id: affiliateId },
+            data: { balanceCents: { increment: totalAmountCents } },
           });
           return NextResponse.json(
             { error: 'Crypto provider rejected the payout', detail: sendResult.error },
@@ -321,14 +332,20 @@ export async function POST(request: NextRequest) {
           where: { payoutId: payout.id },
           data: { payoutId: null, updatedAt: new Date() },
         });
+        await prisma.affiliate.update({
+          where: { id: affiliateId },
+          data: { balanceCents: { increment: totalAmountCents } },
+        });
         return NextResponse.json(
           { error: 'Crypto provider failed', detail: message },
           { status: 502 }
         );
       }
     } else {
-      // Legacy fiat path: mark commissions PAID immediately (admin will send
-      // money out-of-band and flip the payout to COMPLETED).
+      // Fiat path: mark commissions PAID immediately AND decrement balance.
+      // Admin sends money out-of-band and flips the payout to COMPLETED later;
+      // the balance + status flip happens here so the same commissions can't
+      // be double-paid via auto-payout or another manual payout.
       await prisma.commission.updateMany({
         where: { id: { in: commissionIds } },
         data: {
@@ -337,6 +354,10 @@ export async function POST(request: NextRequest) {
           paidAt: new Date(),
           updatedAt: new Date(),
         },
+      });
+      await prisma.affiliate.update({
+        where: { id: affiliateId },
+        data: { balanceCents: { decrement: totalAmountCents } },
       });
     }
 

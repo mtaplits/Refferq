@@ -276,32 +276,19 @@ describe('POST /api/webhook/refund (clawback)', () => {
 });
 
 describe('POST /api/admin/refunds (manual admin refund)', () => {
-    it('refunds a transaction and reverses one matching commission', async () => {
+    it('refunds a transaction and reverses ONLY its linked commissions', async () => {
         await createProgramSettings();
         const admin = await createUser({ name: 'Admin', role: 'ADMIN' });
         const u = await createUser({ name: 'Aff' });
         const a = await createAffiliate({ user: u });
-        await prisma.affiliate.update({ where: { id: a.id }, data: { balanceCents: 5_000 } });
+        await prisma.affiliate.update({ where: { id: a.id }, data: { balanceCents: 10_000 } });
 
-        // Set up a Referral → Transaction (the schema requires referralId).
+        // Build the proper Transaction → Conversion → Commission chain.
         const ref = await prisma.referral.create({
             data: { affiliateId: a.id, leadName: 'L', leadEmail: 'l@example.com' },
         });
-        const tx = await prisma.transaction.create({
-            data: {
-                referralId: ref.id,
-                affiliateId: a.id,
-                customerName: 'C',
-                customerEmail: 'c@example.com',
-                amountCents: 10_000,
-                commissionCents: 1_000,
-                commissionRate: 0.1,
-                status: 'COMPLETED',
-                createdBy: admin.id,
-            },
-        });
         const conv = await prisma.conversion.create({
-            data: { affiliateId: a.id, eventType: 'PURCHASE', amountCents: 10_000, currency: 'USD' },
+            data: { affiliateId: a.id, eventType: 'PURCHASE', amountCents: 10_000, currency: 'USD', status: 'APPROVED' },
         });
         const c = await prisma.commission.create({
             data: {
@@ -312,6 +299,39 @@ describe('POST /api/admin/refunds (manual admin refund)', () => {
                 rate: 10,
                 status: 'APPROVED',
                 approvedAt: new Date(),
+            },
+        });
+
+        // ALSO seed an UNRELATED conversion + commission for the same affiliate
+        // — the old code would have picked an arbitrary one and reversed it.
+        // The new code must NOT touch this.
+        const otherConv = await prisma.conversion.create({
+            data: { affiliateId: a.id, eventType: 'PURCHASE', amountCents: 5_000, currency: 'USD', status: 'APPROVED' },
+        });
+        const otherCommission = await prisma.commission.create({
+            data: {
+                conversionId: otherConv.id,
+                affiliateId: a.id,
+                userId: u.id,
+                amountCents: 500,
+                rate: 10,
+                status: 'APPROVED',
+                approvedAt: new Date(),
+            },
+        });
+
+        const tx = await prisma.transaction.create({
+            data: {
+                referralId: ref.id,
+                affiliateId: a.id,
+                conversionId: conv.id, // <-- the FK that pins this to the right commission
+                customerName: 'C',
+                customerEmail: 'c@example.com',
+                amountCents: 10_000,
+                commissionCents: 1_000,
+                commissionRate: 0.1,
+                status: 'COMPLETED',
+                createdBy: admin.id,
             },
         });
 
@@ -331,8 +351,78 @@ describe('POST /api/admin/refunds (manual admin refund)', () => {
         const cAfter = await prisma.commission.findUnique({ where: { id: c.id } });
         expect(cAfter?.status).toBe('CANCELLED');
 
+        // Unrelated commission stayed APPROVED.
+        const otherAfter = await prisma.commission.findUnique({ where: { id: otherCommission.id } });
+        expect(otherAfter?.status).toBe('APPROVED');
+
+        // Balance decremented by exactly 1_000 (the linked commission), not 500.
         const aff = await prisma.affiliate.findUnique({ where: { id: a.id } });
-        expect(aff?.balanceCents).toBe(4_000);
+        expect(aff?.balanceCents).toBe(9_000);
+
+        // Conversion flipped to REJECTED.
+        const convAfter = await prisma.conversion.findUnique({ where: { id: conv.id } });
+        expect(convAfter?.status).toBe('REJECTED');
+    });
+
+    it('reverses ALL MLM-level commissions for a linked conversion', async () => {
+        await createProgramSettings({ mlmEnabled: true, mlmMaxLevels: 3 });
+        const admin = await createUser({ name: 'Admin', role: 'ADMIN' });
+        const u1 = await createUser({ name: 'L1' });
+        const a1 = await createAffiliate({ user: u1 });
+        const u2 = await createUser({ name: 'L2' });
+        const a2 = await createAffiliate({ user: u2, referredById: a1.id });
+        const u3 = await createUser({ name: 'L3-direct' });
+        const a3 = await createAffiliate({ user: u3, referredById: a2.id });
+
+        await prisma.affiliate.update({ where: { id: a1.id }, data: { balanceCents: 200 } });
+        await prisma.affiliate.update({ where: { id: a2.id }, data: { balanceCents: 500 } });
+        await prisma.affiliate.update({ where: { id: a3.id }, data: { balanceCents: 1_000 } });
+
+        const ref = await prisma.referral.create({
+            data: { affiliateId: a3.id, leadName: 'L', leadEmail: 'l@example.com' },
+        });
+        const conv = await prisma.conversion.create({
+            data: { affiliateId: a3.id, eventType: 'PURCHASE', amountCents: 10_000, currency: 'USD', status: 'APPROVED' },
+        });
+        // 3 commissions, one per level.
+        await prisma.commission.create({ data: { conversionId: conv.id, affiliateId: a3.id, userId: u3.id, amountCents: 1_000, rate: 10, level: 1, status: 'APPROVED', approvedAt: new Date() } });
+        await prisma.commission.create({ data: { conversionId: conv.id, affiliateId: a2.id, userId: u2.id, sourceAffiliateId: a3.id, amountCents: 500, rate: 5, level: 2, status: 'APPROVED', approvedAt: new Date() } });
+        await prisma.commission.create({ data: { conversionId: conv.id, affiliateId: a1.id, userId: u1.id, sourceAffiliateId: a3.id, amountCents: 200, rate: 2, level: 3, status: 'APPROVED', approvedAt: new Date() } });
+
+        const tx = await prisma.transaction.create({
+            data: {
+                referralId: ref.id,
+                affiliateId: a3.id,
+                conversionId: conv.id,
+                customerName: 'C',
+                customerEmail: 'c@example.com',
+                amountCents: 10_000,
+                commissionCents: 1_000,
+                commissionRate: 0.1,
+                status: 'COMPLETED',
+                createdBy: admin.id,
+            },
+        });
+
+        await adminRefund(
+            new Request('http://localhost/api/admin/refunds', {
+                method: 'POST',
+                headers: { 'x-user-id': admin.id, 'content-type': 'application/json' },
+                body: JSON.stringify({ transactionId: tx.id }),
+            }) as unknown as import('next/server').NextRequest
+        );
+
+        // All three commissions CANCELLED.
+        const all = await prisma.commission.findMany({ where: { conversionId: conv.id } });
+        expect(all.every((c) => c.status === 'CANCELLED')).toBe(true);
+
+        // Each upline's balance decremented by their own commission amount.
+        const aff1 = await prisma.affiliate.findUnique({ where: { id: a1.id } });
+        const aff2 = await prisma.affiliate.findUnique({ where: { id: a2.id } });
+        const aff3 = await prisma.affiliate.findUnique({ where: { id: a3.id } });
+        expect(aff1?.balanceCents).toBe(0);
+        expect(aff2?.balanceCents).toBe(0);
+        expect(aff3?.balanceCents).toBe(0);
     });
 
     it('refuses to double-refund the same transaction', async () => {

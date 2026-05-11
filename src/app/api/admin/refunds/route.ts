@@ -27,10 +27,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'Transaction ID is required' }, { status: 400 });
     }
 
-    // Get transaction
+    // Get transaction with its linked conversion + commissions. The
+    // Transaction → Conversion → Commission chain is what makes refunds
+    // accurate: we reverse EXACTLY the commissions this transaction
+    // generated (including every MLM level), not an arbitrary commission
+    // for the affiliate.
     const transaction = await prisma.transaction.findUnique({
       where: { id: transactionId },
-      include: { affiliate: true },
+      include: {
+        conversion: {
+          include: { commissions: true },
+        },
+      },
     });
 
     if (!transaction) {
@@ -41,21 +49,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'Transaction already refunded' }, { status: 400 });
     }
 
-    // Find associated commissions for this affiliate that are pending/approved
-    const commissions = await prisma.commission.findMany({
-      where: {
-        affiliateId: transaction.affiliateId,
-        status: { in: ['PENDING', 'APPROVED'] },
-      },
-    });
+    const linkedCommissions = transaction.conversion?.commissions ?? [];
 
     const results = {
       transactionRefunded: false,
-      commissionReversed: false,
-      balanceDeducted: false,
-      reversedCommissionId: null as string | null,
+      commissionsReversed: 0,
       reversedAmountCents: 0,
       deductedAmountCents: 0,
+      reversedCommissionIds: [] as string[],
+      perCommission: [] as Array<{ id: string; affiliateId: string; previousStatus: string; newStatus: string; amountCents: number }>,
     };
 
     // 1. Mark transaction as REFUNDED
@@ -68,32 +70,69 @@ export async function POST(request: NextRequest) {
     });
     results.transactionRefunded = true;
 
-    // 2. Reverse associated commission (mark as CANCELLED)
-    if (commissions.length > 0) {
-      const matchingCommission = commissions[0]; // Take most recent matching
-      await prisma.commission.update({
-        where: { id: matchingCommission.id },
-        data: { status: 'CANCELLED' },
-      });
-      results.commissionReversed = true;
-      results.reversedCommissionId = matchingCommission.id;
-      results.reversedAmountCents = matchingCommission.amountCents;
-
-      // 3. Deduct from affiliate balance if applicable
-      const affiliate = await prisma.affiliate.findUnique({
-        where: { id: transaction.affiliateId },
-      });
-
-      if (affiliate && affiliate.balanceCents >= matchingCommission.amountCents) {
-        await prisma.affiliate.update({
-          where: { id: transaction.affiliateId },
-          data: {
-            balanceCents: { decrement: matchingCommission.amountCents },
-          },
+    // 2. Reverse each linked commission. Same per-status semantics as the
+    //    public refund webhook so behavior is consistent across paths:
+    //      PENDING  → CANCELLED, no balance change
+    //      APPROVED → CANCELLED, decrement balance
+    //      PAID     → CLAWBACK,  decrement balance (may go negative)
+    for (const commission of linkedCommissions) {
+      if (commission.status === 'CANCELLED' || commission.status === 'CLAWBACK') {
+        results.perCommission.push({
+          id: commission.id,
+          affiliateId: commission.affiliateId,
+          previousStatus: commission.status,
+          newStatus: commission.status,
+          amountCents: 0,
         });
-        results.balanceDeducted = true;
-        results.deductedAmountCents = matchingCommission.amountCents;
+        continue;
       }
+
+      let newStatus: 'CANCELLED' | 'CLAWBACK' = 'CANCELLED';
+      let shouldDecrement = false;
+
+      if (commission.status === 'APPROVED') {
+        newStatus = 'CANCELLED';
+        shouldDecrement = true;
+      } else if (commission.status === 'PAID') {
+        newStatus = 'CLAWBACK';
+        shouldDecrement = true;
+      }
+
+      await prisma.commission.update({
+        where: { id: commission.id },
+        data: {
+          status: newStatus,
+          clawbackNote: `Admin refund: ${reason || 'No reason provided'} (tx ${transactionId})`,
+        },
+      });
+
+      if (shouldDecrement) {
+        await prisma.affiliate.update({
+          where: { id: commission.affiliateId },
+          data: { balanceCents: { decrement: commission.amountCents } },
+        });
+        results.deductedAmountCents += commission.amountCents;
+      }
+
+      results.commissionsReversed += 1;
+      results.reversedAmountCents += commission.amountCents;
+      results.reversedCommissionIds.push(commission.id);
+      results.perCommission.push({
+        id: commission.id,
+        affiliateId: commission.affiliateId,
+        previousStatus: commission.status,
+        newStatus,
+        amountCents: commission.amountCents,
+      });
+    }
+
+    // 3. Mark the conversion as REJECTED so downstream views/aggregations
+    //    don't double-count it.
+    if (transaction.conversionId) {
+      await prisma.conversion.update({
+        where: { id: transaction.conversionId },
+        data: { status: 'REJECTED' },
+      });
     }
 
     // 4. Create audit log
@@ -106,9 +145,10 @@ export async function POST(request: NextRequest) {
         payload: {
           reason: reason || 'No reason provided',
           transactionAmountCents: transaction.amountCents,
-          commissionReversed: results.commissionReversed,
+          commissionsReversed: results.commissionsReversed,
           reversedAmountCents: results.reversedAmountCents,
-          balanceDeducted: results.balanceDeducted,
+          deductedAmountCents: results.deductedAmountCents,
+          perCommission: results.perCommission,
         },
       },
     });

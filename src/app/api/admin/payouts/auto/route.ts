@@ -86,7 +86,43 @@ export async function POST(request: NextRequest) {
 
     for (const affiliate of eligibleAffiliates) {
       try {
-        const payoutAmountCents = affiliate.balanceCents;
+        // Read the unpayed APPROVED commissions — these are what the
+        // affiliate's balance represents. Linking them to the payout (vs
+        // just zeroing balance) eliminates the double-pay race that the
+        // old "zero balance" pattern allowed.
+        const approvedCommissions = await prisma.commission.findMany({
+          where: {
+            affiliateId: affiliate.id,
+            status: 'APPROVED',
+            payoutId: null,
+          },
+          select: { id: true, amountCents: true },
+        });
+        if (approvedCommissions.length === 0) {
+          results.push({
+            affiliateId: affiliate.id,
+            name: affiliate.user.name,
+            status: 'SKIPPED',
+            error: 'No unlinked APPROVED commissions',
+          });
+          continue;
+        }
+        const commissionIds = approvedCommissions.map((c) => c.id);
+        const payoutAmountCents = approvedCommissions.reduce(
+          (s, c) => s + c.amountCents,
+          0
+        );
+        // Re-check the threshold against the actual commission sum (the
+        // earlier balanceCents filter could be stale by now).
+        if (payoutAmountCents < minPayoutCents) {
+          results.push({
+            affiliateId: affiliate.id,
+            name: affiliate.user.name,
+            status: 'SKIPPED',
+            error: 'Commission sum below minPayoutCents',
+          });
+          continue;
+        }
 
         // ─── CRYPTO branch: validate wallet, queue with provider ───
         if (isCryptoProgram) {
@@ -102,23 +138,28 @@ export async function POST(request: NextRequest) {
             continue;
           }
 
-          // Create payout in PROCESSING and zero the balance up front (race
-          // semantics match the fiat branch). On provider failure we refund
-          // by re-incrementing the balance.
+          // Atomic invariant: link commissions to payout + decrement balance
+          // by their exact sum. Commissions stay APPROVED until the SHKeeper
+          // callback flips them to PAID; on provider failure we revert both.
           const payout = await prisma.payout.create({
             data: {
               affiliateId: affiliate.id,
               userId: affiliate.user.id,
               amountCents: payoutAmountCents,
+              commissionCount: commissionIds.length,
               status: 'PROCESSING',
               method: 'USDT_ONCHAIN',
               notes: 'Auto-payout (crypto)',
               createdBy: admin.id,
             },
           });
+          await prisma.commission.updateMany({
+            where: { id: { in: commissionIds } },
+            data: { payoutId: payout.id, updatedAt: new Date() },
+          });
           await prisma.affiliate.update({
             where: { id: affiliate.id },
-            data: { balanceCents: 0 },
+            data: { balanceCents: { decrement: payoutAmountCents } },
           });
 
           try {
@@ -134,7 +175,11 @@ export async function POST(request: NextRequest) {
             });
 
             if (sendResult.status === 'failed') {
-              // Refund the balance and mark payout failed.
+              // Refund: unlink commissions and re-credit balance.
+              await prisma.commission.updateMany({
+                where: { payoutId: payout.id },
+                data: { payoutId: null, updatedAt: new Date() },
+              });
               await prisma.affiliate.update({
                 where: { id: affiliate.id },
                 data: { balanceCents: { increment: payoutAmountCents } },
@@ -165,7 +210,11 @@ export async function POST(request: NextRequest) {
               },
             });
           } catch (cryptoErr) {
-            // Same refund + FAILED path as a rejected response.
+            // Same refund path as a rejected provider response.
+            await prisma.commission.updateMany({
+              where: { payoutId: payout.id },
+              data: { payoutId: null, updatedAt: new Date() },
+            });
             await prisma.affiliate.update({
               where: { id: affiliate.id },
               data: { balanceCents: { increment: payoutAmountCents } },
@@ -194,7 +243,7 @@ export async function POST(request: NextRequest) {
               actorId: admin.id,
               objectType: 'payout',
               objectId: payout.id,
-              payload: { affiliateId: affiliate.id, amountCents: payoutAmountCents },
+              payload: { affiliateId: affiliate.id, amountCents: payoutAmountCents, commissionCount: commissionIds.length },
             },
           });
           results.push({
@@ -209,29 +258,33 @@ export async function POST(request: NextRequest) {
           continue;
         }
 
-        // ─── FIAT branch (existing behavior) ───
-        // Create payout record
+        // ─── FIAT branch: link commissions, mark PAID, decrement balance ───
         const payout = await prisma.payout.create({
           data: {
             affiliateId: affiliate.id,
             userId: affiliate.user.id,
             amountCents: payoutAmountCents,
+            commissionCount: commissionIds.length,
             status: 'PENDING',
             method: 'AUTO',
             notes: 'Auto-payout processed',
             createdBy: admin.id,
           },
         });
-
-        // Reset affiliate balance
-        await prisma.affiliate.update({
-          where: { id: affiliate.id },
+        await prisma.commission.updateMany({
+          where: { id: { in: commissionIds } },
           data: {
-            balanceCents: 0,
+            status: 'PAID',
+            payoutId: payout.id,
+            paidAt: new Date(),
+            updatedAt: new Date(),
           },
         });
+        await prisma.affiliate.update({
+          where: { id: affiliate.id },
+          data: { balanceCents: { decrement: payoutAmountCents } },
+        });
 
-        // Create audit log
         await prisma.auditLog.create({
           data: {
             action: 'AUTO_PAYOUT_CREATED',
@@ -241,6 +294,7 @@ export async function POST(request: NextRequest) {
             payload: {
               affiliateId: affiliate.id,
               amountCents: payoutAmountCents,
+              commissionCount: commissionIds.length,
             },
           },
         });

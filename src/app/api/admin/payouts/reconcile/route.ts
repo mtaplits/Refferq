@@ -78,9 +78,17 @@ export async function POST(request: NextRequest) {
                         updatedAt: now,
                     },
                 });
+                // Refund: unlink commissions and re-credit balance (mirror
+                // the payout-status webhook's failed-branch behavior so the
+                // balance invariant stays correct regardless of which path
+                // resolves the failure).
                 await prisma.commission.updateMany({
                     where: { payoutId: payout.id },
                     data: { payoutId: null, updatedAt: now },
+                });
+                await prisma.affiliate.update({
+                    where: { id: payout.affiliateId },
+                    data: { balanceCents: { increment: payout.amountCents } },
                 });
                 summary.push({ id: payout.id, from: payout.txStatus, to: 'FAILED' });
             }
