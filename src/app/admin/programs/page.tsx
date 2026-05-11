@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { formatCurrency as formatCurrencyLib } from '@/lib/currency';
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from '@/components/ui/card';
@@ -154,10 +155,8 @@ export default function ProgramsPage() {
     } catch (error) { console.error('Failed to delete program:', error); }
   };
 
-  const formatCurrency = (cents: number, currency: string = 'INR') => {
-    const symbol = currency === 'INR' ? '\u20B9' : currency === 'USD' ? '$' : currency === 'EUR' ? '\u20AC' : currency;
-    return `${symbol}${(cents / 100).toLocaleString('en-IN', { minimumFractionDigits: 0 })}`;
-  };
+  const formatCurrency = (cents: number, currency: string = 'INR') =>
+    formatCurrencyLib(cents, currency);
 
   const stats = {
     total: programs.length,

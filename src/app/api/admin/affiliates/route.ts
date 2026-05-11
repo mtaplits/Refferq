@@ -19,7 +19,10 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Fetch all affiliates with their user info and counts
+    // Fetch all affiliates with their user info, counts, upline reference,
+    // and trust tier. `_count.downline` exposes how many affiliates this one
+    // has personally recruited; `referredBy` exposes the upline's
+    // referralCode + email.
     const affiliates = await prisma.affiliate.findMany({
       include: {
         user: {
@@ -32,9 +35,20 @@ export async function GET(request: NextRequest) {
             createdAt: true
           }
         },
+        referredBy: {
+          select: {
+            id: true,
+            referralCode: true,
+            user: { select: { email: true, name: true } },
+          },
+        },
+        trustScore: {
+          select: { tier: true, score: true },
+        },
         _count: {
           select: {
-            referrals: true
+            referrals: true,
+            downline: true,
           }
         }
       },

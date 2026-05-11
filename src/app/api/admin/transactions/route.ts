@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
     if (referralId) where.referralId = referralId;
     if (affiliateId) where.affiliateId = affiliateId;
 
-    const transactions = await (prisma as any).transaction.findMany({
+    const transactions = await prisma.transaction.findMany({
       where,
       include: {
         referral: true,
@@ -170,11 +170,31 @@ export async function POST(request: NextRequest) {
     const amountCents = Math.floor(Number(amount) * 100);
     const commissionCents = Math.floor(amountCents * commissionRate);
 
-    // Create transaction
-    const transaction = await (prisma as any).transaction.create({
+    // Create the Conversion first so we can link the Transaction to it.
+    // This linkage is what makes refunds reliable — `/api/admin/refunds`
+    // walks `transaction.conversion.commissions` to reverse exactly the
+    // commissions this transaction generated (including all MLM levels),
+    // instead of picking an arbitrary commission for the affiliate.
+    const conversion = await prisma.conversion.create({
+      data: {
+        affiliateId: referral.affiliateId,
+        referralId: referral.id,
+        eventType: 'PURCHASE',
+        amountCents,
+        status: 'APPROVED',
+        currency: 'INR',
+        eventMetadata: {
+          commissionCents,
+          commissionRate,
+        },
+      },
+    });
+
+    const transaction = await prisma.transaction.create({
       data: {
         referralId,
         affiliateId: referral.affiliateId,
+        conversionId: conversion.id,
         customerId: referral.subscriptionId,
         customerName: referral.leadName,
         customerEmail: referral.leadEmail,
@@ -186,25 +206,8 @@ export async function POST(request: NextRequest) {
         invoiceId,
         paymentMethod,
         paidAt: paidAt ? new Date(paidAt) : new Date(),
-        createdBy: user.id
-      }
-    });
-
-    // Also create a commission record for tracking
-    await prisma.conversion.create({
-      data: {
-        affiliateId: referral.affiliateId,
-        referralId: referral.id,
-        eventType: 'PURCHASE',
-        amountCents,
-        status: 'APPROVED',
-        currency: 'INR',
-        eventMetadata: {
-          transactionId: transaction.id,
-          commissionCents,
-          commissionRate
-        }
-      }
+        createdBy: user.id,
+      },
     });
 
     // Send email notification to affiliate
@@ -284,7 +287,7 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    const transaction = await (prisma as any).transaction.update({
+    const transaction = await prisma.transaction.update({
       where: { id },
       data: {
         ...(status && { status }),
@@ -343,7 +346,7 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    await (prisma as any).transaction.delete({
+    await prisma.transaction.delete({
       where: { id }
     });
 

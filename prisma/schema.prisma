@@ -27,22 +27,28 @@ model User {
 }
 
 model Affiliate {
-  id             String        @id @default(cuid())
-  userId         String        @unique @map("user_id")
-  referralCode   String        @unique @map("referral_code")
-  payoutDetails  Json          @default("{}") @map("payout_details")
-  balanceCents   Int           @default(0) @map("balance_cents")
-  createdAt      DateTime      @default(now()) @map("created_at")
-  updatedAt      DateTime      @updatedAt @map("updated_at")
-  partnerGroupId String?       @map("partner_group_id")
-  partnerGroup   PartnerGroup? @relation(fields: [partnerGroupId], references: [id])
-  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id             String          @id @default(cuid())
+  userId         String          @unique @map("user_id")
+  referralCode   String          @unique @map("referral_code")
+  payoutDetails  Json            @default("{}") @map("payout_details")
+  balanceCents   Int             @default(0) @map("balance_cents")
+  referredById   String?         @map("referred_by_id")
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+  partnerGroupId String?         @map("partner_group_id")
+  partnerGroup   PartnerGroup?   @relation(fields: [partnerGroupId], references: [id])
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   commissions    Commission[]
   conversions    Conversion[]
   referrals      Referral[]
   transactions   Transaction[]
   payouts        Payout[]
+  referredBy     Affiliate?      @relation("AffiliateReferrals", fields: [referredById], references: [id])
+  downline       Affiliate[]     @relation("AffiliateReferrals")
+  credits        CreditEarning[]
+  trustScore     TrustScore?
 
+  @@index([referredById])
   @@map("affiliates")
 }
 
@@ -96,31 +102,35 @@ model Conversion {
   commissions   Commission[]
   affiliate     Affiliate        @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
   referral      Referral?        @relation(fields: [referralId], references: [id])
+  transaction   Transaction?
 
   @@map("conversions")
 }
 
 model Commission {
-  id           String           @id @default(cuid())
-  conversionId String           @map("conversion_id")
-  affiliateId  String           @map("affiliate_id")
-  userId       String           @map("user_id")
-  amountCents  Int              @map("amount_cents")
-  rate         Float
-  status       CommissionStatus @default(PENDING)
-  approvedBy   String?          @map("approved_by")
-  approvedAt   DateTime?        @map("approved_at")
-  paidAt       DateTime?        @map("paid_at")
-  maturesAt    DateTime?        @map("matures_at")
-  clawbackNote String?          @map("clawback_note")
-  createdAt    DateTime         @default(now()) @map("created_at")
-  updatedAt    DateTime         @updatedAt @map("updated_at")
-  affiliate    Affiliate        @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
-  conversion   Conversion       @relation(fields: [conversionId], references: [id], onDelete: Cascade)
-  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  payout       Payout?          @relation("PayoutCommissions", fields: [payoutId], references: [id])
-  payoutId     String?          @map("payout_id")
+  id                String           @id @default(cuid())
+  conversionId      String           @map("conversion_id")
+  affiliateId       String           @map("affiliate_id")
+  userId            String           @map("user_id")
+  amountCents       Int              @map("amount_cents")
+  rate              Float
+  status            CommissionStatus @default(PENDING)
+  approvedBy        String?          @map("approved_by")
+  approvedAt        DateTime?        @map("approved_at")
+  paidAt            DateTime?        @map("paid_at")
+  maturesAt         DateTime?        @map("matures_at")
+  clawbackNote      String?          @map("clawback_note")
+  level             Int              @default(1)
+  sourceAffiliateId String?          @map("source_affiliate_id")
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+  affiliate         Affiliate        @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  conversion        Conversion       @relation(fields: [conversionId], references: [id], onDelete: Cascade)
+  user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payout            Payout?          @relation("PayoutCommissions", fields: [payoutId], references: [id])
+  payoutId          String?          @map("payout_id")
 
+  @@index([sourceAffiliateId])
   @@map("commissions")
 }
 
@@ -135,12 +145,17 @@ model Payout {
   notes           String?
   processedAt     DateTime?    @map("processed_at")
   createdBy       String       @map("created_by")
+  providerTaskId  String?      @map("provider_task_id")
+  txHash          String?      @map("tx_hash")
+  txStatus        String?      @map("tx_status")
+  providerError   String?      @map("provider_error")
   createdAt       DateTime     @default(now()) @map("created_at")
   updatedAt       DateTime     @updatedAt @map("updated_at")
   affiliate       Affiliate    @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
   user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   commissions     Commission[] @relation("PayoutCommissions")
 
+  @@index([providerTaskId])
   @@map("payouts")
 }
 
@@ -149,12 +164,14 @@ model CommissionRule {
   name       String
   type       CommissionRuleType
   value      Float
+  level      Int                @default(1)
   conditions Json               @default("{}")
   isDefault  Boolean            @default(false) @map("is_default")
   isActive   Boolean            @default(true) @map("is_active")
   createdAt  DateTime           @default(now()) @map("created_at")
   updatedAt  DateTime           @updatedAt @map("updated_at")
 
+  @@index([level, isDefault, isActive])
   @@map("commission_rules")
 }
 
@@ -186,41 +203,54 @@ model OTP {
 }
 
 model ProgramSettings {
-  id                        String   @id @default(cuid())
-  programId                 String   @unique @map("program_id")
-  productName               String   @map("product_name")
-  programName               String   @map("program_name")
-  websiteUrl                String   @map("website_url")
-  currency                  String   @default("INR")
-  blockedCountries          Json     @default("[]") @map("blocked_countries")
-  portalSubdomain           String   @map("portal_subdomain")
-  termsOfService            String?  @map("terms_of_service")
-  minimumPayoutThreshold    Int      @default(0) @map("minimum_payout_threshold")
-  payoutTerm                String   @default("NET-15") @map("payout_term")
-  payoutMethods             Json     @default("[\"PAYPAL\"]") @map("payout_methods")
-  brandBackgroundColor      String   @default("#000000") @map("brand_background_color")
-  brandButtonColor          String   @default("#000000") @map("brand_button_color")
-  brandTextColor            String   @default("#ffffff") @map("brand_text_color")
-  companyLogo               String?  @map("company_logo")
-  favicon                   String?
-  cookieDuration            Int      @default(30) @map("cookie_duration")
-  urlParameters             Json     @default("[]") @map("url_parameters")
-  hideCustomerEmails        Boolean  @default(true) @map("hide_customer_emails")
-  disablePersonalizedLinks  Boolean  @default(false) @map("disable_personalized_links")
-  blockKeywords             Json     @default("[]") @map("block_keywords")
-  blockSocialMediaAds       Json     @default("[]") @map("block_social_media_ads")
-  allowManualLeadSubmission Boolean  @default(false) @map("allow_manual_lead_submission")
-  programWideCouponCode     String?  @map("program_wide_coupon_code")
-  hidePartnerLinks          Boolean  @default(false) @map("hide_partner_links")
-  requireBusinessEmail      Boolean  @default(false) @map("require_business_email")
-  enablePostbacks           Boolean  @default(false) @map("enable_postbacks")
-  autoApprovePayouts        Boolean  @default(false) @map("auto_approve_payouts")
-  payoutFrequency           String   @default("MONTHLY") @map("payout_frequency")
-  commissionHoldDays        Int      @default(30) @map("commission_hold_days")
-  minPayoutCents            Int      @default(100000) @map("min_payout_cents")
-  companyName               String?  @map("company_name")
-  createdAt                 DateTime @default(now()) @map("created_at")
-  updatedAt                 DateTime @updatedAt @map("updated_at")
+  id                           String   @id @default(cuid())
+  programId                    String   @unique @map("program_id")
+  productName                  String   @map("product_name")
+  programName                  String   @map("program_name")
+  websiteUrl                   String   @map("website_url")
+  currency                     String   @default("INR")
+  blockedCountries             Json     @default("[]") @map("blocked_countries")
+  portalSubdomain              String   @map("portal_subdomain")
+  termsOfService               String?  @map("terms_of_service")
+  minimumPayoutThreshold       Int      @default(0) @map("minimum_payout_threshold")
+  payoutTerm                   String   @default("NET-15") @map("payout_term")
+  payoutMethods                Json     @default("[\"PAYPAL\"]") @map("payout_methods")
+  brandBackgroundColor         String   @default("#000000") @map("brand_background_color")
+  brandButtonColor             String   @default("#000000") @map("brand_button_color")
+  brandTextColor               String   @default("#ffffff") @map("brand_text_color")
+  companyLogo                  String?  @map("company_logo")
+  favicon                      String?
+  cookieDuration               Int      @default(30) @map("cookie_duration")
+  urlParameters                Json     @default("[]") @map("url_parameters")
+  hideCustomerEmails           Boolean  @default(true) @map("hide_customer_emails")
+  disablePersonalizedLinks     Boolean  @default(false) @map("disable_personalized_links")
+  blockKeywords                Json     @default("[]") @map("block_keywords")
+  blockSocialMediaAds          Json     @default("[]") @map("block_social_media_ads")
+  allowManualLeadSubmission    Boolean  @default(false) @map("allow_manual_lead_submission")
+  programWideCouponCode        String?  @map("program_wide_coupon_code")
+  hidePartnerLinks             Boolean  @default(false) @map("hide_partner_links")
+  requireBusinessEmail         Boolean  @default(false) @map("require_business_email")
+  enablePostbacks              Boolean  @default(false) @map("enable_postbacks")
+  autoApprovePayouts           Boolean  @default(false) @map("auto_approve_payouts")
+  payoutFrequency              String   @default("MONTHLY") @map("payout_frequency")
+  commissionHoldDays           Int      @default(30) @map("commission_hold_days")
+  minPayoutCents               Int      @default(100000) @map("min_payout_cents")
+  companyName                  String?  @map("company_name")
+  treasuryType                 String   @default("FIAT") @map("treasury_type")
+  mlmEnabled                   Boolean  @default(false) @map("mlm_enabled")
+  mlmMaxLevels                 Int      @default(1) @map("mlm_max_levels")
+  mlmCommissionMode            String   @default("ADDITIVE") @map("mlm_commission_mode")
+  trustEnabled                 Boolean  @default(true) @map("trust_enabled")
+  trustNewHoldPctOff           Int      @default(0) @map("trust_new_hold_pct_off")
+  trustBuildingHoldPctOff      Int      @default(0) @map("trust_building_hold_pct_off")
+  trustTrustedHoldPctOff       Int      @default(75) @map("trust_trusted_hold_pct_off")
+  trustEliteHoldPctOff         Int      @default(100) @map("trust_elite_hold_pct_off")
+  trustNewCommissionBoost      Float    @default(0) @map("trust_new_commission_boost")
+  trustBuildingCommissionBoost Float    @default(0) @map("trust_building_commission_boost")
+  trustTrustedCommissionBoost  Float    @default(0) @map("trust_trusted_commission_boost")
+  trustEliteCommissionBoost    Float    @default(0) @map("trust_elite_commission_boost")
+  createdAt                    DateTime @default(now()) @map("created_at")
+  updatedAt                    DateTime @updatedAt @map("updated_at")
 
   @@map("program_settings")
 }
@@ -243,6 +273,7 @@ model Transaction {
   id              String            @id @default(cuid())
   referralId      String            @map("referral_id")
   affiliateId     String            @map("affiliate_id")
+  conversionId    String?           @unique @map("conversion_id")
   customerId      String?           @map("customer_id")
   customerName    String            @map("customer_name")
   customerEmail   String            @map("customer_email")
@@ -259,6 +290,7 @@ model Transaction {
   updatedAt       DateTime          @updatedAt @map("updated_at")
   referral        Referral          @relation(fields: [referralId], references: [id], onDelete: Cascade)
   affiliate       Affiliate         @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  conversion      Conversion?       @relation(fields: [conversionId], references: [id])
 
   @@map("transactions")
 }
@@ -314,35 +346,35 @@ model IntegrationSettings {
 }
 
 model Webhook {
-  id           String       @id @default(cuid())
-  name         String
-  url          String
-  secret       String
-  events       Json         @default("[]") // Array of event types
-  isActive     Boolean      @default(true) @map("is_active")
-  failureCount Int          @default(0) @map("failure_count")
-  lastTriggeredAt DateTime? @map("last_triggered_at")
-  createdAt    DateTime     @default(now()) @map("created_at")
-  updatedAt    DateTime     @updatedAt @map("updated_at")
-  logs         WebhookLog[]
+  id              String       @id @default(cuid())
+  name            String
+  url             String
+  secret          String
+  events          Json         @default("[]") // Array of event types
+  isActive        Boolean      @default(true) @map("is_active")
+  failureCount    Int          @default(0) @map("failure_count")
+  lastTriggeredAt DateTime?    @map("last_triggered_at")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+  logs            WebhookLog[]
 
   @@map("webhooks")
 }
 
 model WebhookLog {
-  id           String        @id @default(cuid())
-  webhookId    String        @map("webhook_id")
-  eventType    String        @map("event_type")
-  payload      Json          @default("{}")
-  status       WebhookStatus @default(PENDING)
-  statusCode   Int?          @map("status_code")
-  response     String?
-  error        String?
-  attempts     Int           @default(0)
-  nextRetryAt  DateTime?     @map("next_retry_at")
-  completedAt  DateTime?     @map("completed_at")
-  createdAt    DateTime      @default(now()) @map("created_at")
-  webhook      Webhook       @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  id          String        @id @default(cuid())
+  webhookId   String        @map("webhook_id")
+  eventType   String        @map("event_type")
+  payload     Json          @default("{}")
+  status      WebhookStatus @default(PENDING)
+  statusCode  Int?          @map("status_code")
+  response    String?
+  error       String?
+  attempts    Int           @default(0)
+  nextRetryAt DateTime?     @map("next_retry_at")
+  completedAt DateTime?     @map("completed_at")
+  createdAt   DateTime      @default(now()) @map("created_at")
+  webhook     Webhook       @relation(fields: [webhookId], references: [id], onDelete: Cascade)
 
   @@index([webhookId])
   @@index([eventType])
@@ -403,6 +435,7 @@ enum PayoutMethod {
   WISE
   BANK_CSV
   STRIPE_CONNECT
+  USDT_ONCHAIN
 }
 
 enum PayoutStatus {
@@ -449,19 +482,19 @@ enum EmailStatus {
 // ───────────────────────────────────────────────
 
 model ScheduledReport {
-  id            String                @id @default(cuid())
-  name          String
-  reportType    String                @map("report_type") // summary, affiliates, referrals, commissions, payouts, cohort
-  frequency     ReportFrequency       @default(WEEKLY)
-  recipients    Json                  @default("[]") // array of email addresses
-  filters       Json                  @default("{}") // date range, status filters, etc.
-  format        String                @default("csv") // csv, json
-  isActive      Boolean               @default(true) @map("is_active")
-  lastRunAt     DateTime?             @map("last_run_at")
-  nextRunAt     DateTime?             @map("next_run_at")
-  createdBy     String                @map("created_by")
-  createdAt     DateTime              @default(now()) @map("created_at")
-  updatedAt     DateTime              @updatedAt @map("updated_at")
+  id         String          @id @default(cuid())
+  name       String
+  reportType String          @map("report_type") // summary, affiliates, referrals, commissions, payouts, cohort
+  frequency  ReportFrequency @default(WEEKLY)
+  recipients Json            @default("[]") // array of email addresses
+  filters    Json            @default("{}") // date range, status filters, etc.
+  format     String          @default("csv") // csv, json
+  isActive   Boolean         @default(true) @map("is_active")
+  lastRunAt  DateTime?       @map("last_run_at")
+  nextRunAt  DateTime?       @map("next_run_at")
+  createdBy  String          @map("created_by")
+  createdAt  DateTime        @default(now()) @map("created_at")
+  updatedAt  DateTime        @updatedAt @map("updated_at")
 
   @@map("scheduled_reports")
 }
@@ -483,20 +516,20 @@ model SavedReport {
 }
 
 model ApiKey {
-  id          String      @id @default(cuid())
-  name        String
-  key         String?     // Cleared after creation for security; only shown once
-  keyHash     String      @unique @map("key_hash") // SHA-256 hash of the key for lookups
-  prefix      String      // first 8 chars for display
-  userId      String      @map("user_id")
-  scopes      Json        @default("[\"read\"]") // read, write, admin
-  rateLimit   Int         @default(100) @map("rate_limit") // requests per minute
-  isActive    Boolean     @default(true) @map("is_active")
-  lastUsedAt  DateTime?   @map("last_used_at")
-  expiresAt   DateTime?   @map("expires_at")
-  createdAt   DateTime    @default(now()) @map("created_at")
-  updatedAt   DateTime    @updatedAt @map("updated_at")
-  usageLogs   ApiUsageLog[]
+  id         String        @id @default(cuid())
+  name       String
+  key        String? // Cleared after creation for security; only shown once
+  keyHash    String        @unique @map("key_hash") // SHA-256 hash of the key for lookups
+  prefix     String // first 8 chars for display
+  userId     String        @map("user_id")
+  scopes     Json          @default("[\"read\"]") // read, write, admin
+  rateLimit  Int           @default(100) @map("rate_limit") // requests per minute
+  isActive   Boolean       @default(true) @map("is_active")
+  lastUsedAt DateTime?     @map("last_used_at")
+  expiresAt  DateTime?     @map("expires_at")
+  createdAt  DateTime      @default(now()) @map("created_at")
+  updatedAt  DateTime      @updatedAt @map("updated_at")
+  usageLogs  ApiUsageLog[]
 
   @@index([keyHash])
   @@index([userId])
@@ -504,16 +537,16 @@ model ApiKey {
 }
 
 model ApiUsageLog {
-  id          String   @id @default(cuid())
-  apiKeyId    String   @map("api_key_id")
-  endpoint    String
-  method      String
-  statusCode  Int      @map("status_code")
-  responseMs  Int      @map("response_ms") // response time in milliseconds
-  ipAddress   String?  @map("ip_address")
-  userAgent   String?  @map("user_agent")
-  createdAt   DateTime @default(now()) @map("created_at")
-  apiKey      ApiKey   @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  id         String   @id @default(cuid())
+  apiKeyId   String   @map("api_key_id")
+  endpoint   String
+  method     String
+  statusCode Int      @map("status_code")
+  responseMs Int      @map("response_ms") // response time in milliseconds
+  ipAddress  String?  @map("ip_address")
+  userAgent  String?  @map("user_agent")
+  createdAt  DateTime @default(now()) @map("created_at")
+  apiKey     ApiKey   @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
 
   @@index([apiKeyId])
   @@index([createdAt])
@@ -522,12 +555,12 @@ model ApiUsageLog {
 }
 
 model RateLimitEntry {
-  id          String   @id @default(cuid())
-  identifier  String   // API key or IP address
-  endpoint    String
-  windowStart DateTime @map("window_start")
-  requestCount Int     @default(0) @map("request_count")
-  createdAt   DateTime @default(now()) @map("created_at")
+  id           String   @id @default(cuid())
+  identifier   String // API key or IP address
+  endpoint     String
+  windowStart  DateTime @map("window_start")
+  requestCount Int      @default(0) @map("request_count")
+  createdAt    DateTime @default(now()) @map("created_at")
 
   @@unique([identifier, endpoint, windowStart])
   @@index([identifier])
@@ -546,22 +579,22 @@ enum ReportFrequency {
 // ───────────────────────────────────────────────
 
 model Coupon {
-  id              String       @id @default(cuid())
-  code            String       @unique
-  description     String?
-  discountType    String       @default("PERCENTAGE") @map("discount_type") // PERCENTAGE | FIXED
-  discountValue   Float        @map("discount_value") // e.g. 20 = 20% or 20 = $20
-  currency        String       @default("INR")
-  maxUses         Int?         @map("max_uses")
-  usedCount       Int          @default(0) @map("used_count")
-  affiliateId     String?      @map("affiliate_id") // null = program-wide
-  programId       String?      @map("program_id")
-  isActive        Boolean      @default(true) @map("is_active")
-  startsAt        DateTime?    @map("starts_at")
-  expiresAt       DateTime?    @map("expires_at")
-  createdBy       String       @map("created_by")
-  createdAt       DateTime     @default(now()) @map("created_at")
-  updatedAt       DateTime     @updatedAt @map("updated_at")
+  id            String    @id @default(cuid())
+  code          String    @unique
+  description   String?
+  discountType  String    @default("PERCENTAGE") @map("discount_type") // PERCENTAGE | FIXED
+  discountValue Float     @map("discount_value") // e.g. 20 = 20% or 20 = $20
+  currency      String    @default("INR")
+  maxUses       Int?      @map("max_uses")
+  usedCount     Int       @default(0) @map("used_count")
+  affiliateId   String?   @map("affiliate_id") // null = program-wide
+  programId     String?   @map("program_id")
+  isActive      Boolean   @default(true) @map("is_active")
+  startsAt      DateTime? @map("starts_at")
+  expiresAt     DateTime? @map("expires_at")
+  createdBy     String    @map("created_by")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
 
   @@index([code])
   @@index([affiliateId])
@@ -576,7 +609,7 @@ model Resource {
   id          String   @id @default(cuid())
   title       String
   description String?
-  type        String   // BANNER, LOGO, EMAIL_TEMPLATE, SOCIAL_POST, DOCUMENT, VIDEO, OTHER
+  type        String // BANNER, LOGO, EMAIL_TEMPLATE, SOCIAL_POST, DOCUMENT, VIDEO, OTHER
   fileUrl     String   @map("file_url")
   fileName    String   @map("file_name")
   fileSize    Int?     @map("file_size") // bytes
@@ -633,24 +666,24 @@ enum InvoiceStatus {
 // ───────────────────────────────────────────────
 
 model Program {
-  id                String   @id @default(cuid())
-  name              String
-  slug              String   @unique
-  description       String?
-  commissionRate    Float    @default(20) @map("commission_rate")
-  commissionType    String   @default("PERCENTAGE") @map("commission_type")
-  cookieDuration    Int      @default(30) @map("cookie_duration") // days
-  currency          String   @default("INR")
-  isActive          Boolean  @default(true) @map("is_active")
-  isDefault         Boolean  @default(false) @map("is_default")
-  autoApprove       Boolean  @default(false) @map("auto_approve")
-  minPayoutCents    Int      @default(100000) @map("min_payout_cents") // 1000 INR
-  payoutFrequency   String   @default("MONTHLY") @map("payout_frequency")
-  termsUrl          String?  @map("terms_url")
-  logoUrl           String?  @map("logo_url")
-  brandColor        String   @default("#10b981") @map("brand_color")
-  createdAt         DateTime @default(now()) @map("created_at")
-  updatedAt         DateTime @updatedAt @map("updated_at")
+  id              String   @id @default(cuid())
+  name            String
+  slug            String   @unique
+  description     String?
+  commissionRate  Float    @default(20) @map("commission_rate")
+  commissionType  String   @default("PERCENTAGE") @map("commission_type")
+  cookieDuration  Int      @default(30) @map("cookie_duration") // days
+  currency        String   @default("INR")
+  isActive        Boolean  @default(true) @map("is_active")
+  isDefault       Boolean  @default(false) @map("is_default")
+  autoApprove     Boolean  @default(false) @map("auto_approve")
+  minPayoutCents  Int      @default(100000) @map("min_payout_cents") // 1000 INR
+  payoutFrequency String   @default("MONTHLY") @map("payout_frequency")
+  termsUrl        String?  @map("terms_url")
+  logoUrl         String?  @map("logo_url")
+  brandColor      String   @default("#10b981") @map("brand_color")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
 
   @@map("programs")
 }
@@ -660,18 +693,18 @@ model Program {
 // ───────────────────────────────────────────────
 
 model TeamMember {
-  id          String     @id @default(cuid())
+  id          String           @id @default(cuid())
   email       String
   name        String
-  role        TeamRole   @default(VIEWER)
-  permissions Json       @default("[]") // granular permissions
-  invitedBy   String     @map("invited_by")
-  userId      String?    @map("user_id") // linked user after acceptance
+  role        TeamRole         @default(VIEWER)
+  permissions Json             @default("[]") // granular permissions
+  invitedBy   String           @map("invited_by")
+  userId      String?          @map("user_id") // linked user after acceptance
   status      TeamMemberStatus @default(PENDING)
-  invitedAt   DateTime   @default(now()) @map("invited_at")
-  acceptedAt  DateTime?  @map("accepted_at")
-  createdAt   DateTime   @default(now()) @map("created_at")
-  updatedAt   DateTime   @updatedAt @map("updated_at")
+  invitedAt   DateTime         @default(now()) @map("invited_at")
+  acceptedAt  DateTime?        @map("accepted_at")
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
 
   @@unique([email])
   @@map("team_members")
@@ -688,4 +721,94 @@ enum TeamMemberStatus {
   PENDING
   ACTIVE
   DEACTIVATED
+}
+
+// ───────────────────────────────────────────────
+// SaaS Credits (Feature C)
+// ───────────────────────────────────────────────
+
+model CreditBucket {
+  id               String            @id @default(cuid())
+  name             String
+  description      String?
+  creditType       CreditType        @map("credit_type")
+  externalSaasName String?           @map("external_saas_name")
+  externalSaasUrl  String?           @map("external_saas_url")
+  triggerType      CreditTriggerType @map("trigger_type")
+  triggerValue     Int?              @map("trigger_value")
+  expiresAfterDays Int?              @map("expires_after_days")
+  minTrustTier     TrustTier?        @map("min_trust_tier")
+  programId        String?           @map("program_id")
+  isActive         Boolean           @default(true) @map("is_active")
+  createdAt        DateTime          @default(now()) @map("created_at")
+  updatedAt        DateTime          @updatedAt @map("updated_at")
+  earnings         CreditEarning[]
+
+  @@index([isActive, triggerType])
+  @@map("credit_buckets")
+}
+
+model CreditEarning {
+  id          String       @id @default(cuid())
+  affiliateId String       @map("affiliate_id")
+  bucketId    String       @map("bucket_id")
+  unlockCode  String       @unique @map("unlock_code")
+  status      CreditStatus @default(EARNED)
+  earnedAt    DateTime     @default(now()) @map("earned_at")
+  redeemedAt  DateTime?    @map("redeemed_at")
+  expiresAt   DateTime?    @map("expires_at")
+  triggerNote String?      @map("trigger_note")
+  affiliate   Affiliate    @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  bucket      CreditBucket @relation(fields: [bucketId], references: [id])
+
+  @@index([affiliateId])
+  @@index([unlockCode])
+  @@index([bucketId, affiliateId])
+  @@map("credit_earnings")
+}
+
+enum CreditType {
+  INTERNAL_REFFERQ
+  EXTERNAL_SAAS
+}
+
+enum CreditTriggerType {
+  MILESTONE_REFERRALS
+  MILESTONE_EARNINGS
+  MANUAL_ADMIN
+}
+
+enum CreditStatus {
+  EARNED
+  REDEEMED
+  EXPIRED
+  REVOKED
+}
+
+// ───────────────────────────────────────────────
+// Trust Score (Feature E)
+// ───────────────────────────────────────────────
+
+model TrustScore {
+  id             String    @id @default(cuid())
+  affiliateId    String    @unique @map("affiliate_id")
+  score          Int       @default(0)
+  tier           TrustTier @default(NEW)
+  inputs         Json      @default("{}")
+  attestationUid String?   @map("attestation_uid")
+  attestationSig String?   @map("attestation_sig")
+  lastComputedAt DateTime  @default(now()) @map("last_computed_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  affiliate      Affiliate @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+
+  @@index([tier])
+  @@map("trust_scores")
+}
+
+enum TrustTier {
+  NEW
+  BUILDING
+  TRUSTED
+  ELITE
 }

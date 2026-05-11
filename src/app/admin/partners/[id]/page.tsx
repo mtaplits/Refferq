@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
+import { formatCurrency as formatCurrencyLib } from '@/lib/currency';
 import {
   Card,
   CardContent,
@@ -72,6 +73,23 @@ interface Partner {
   totalLeads: number;
   totalRevenue: number;
   createdAt: string;
+  referredBy: {
+    id: string;
+    referralCode: string;
+    name: string | null;
+    email: string | null;
+  } | null;
+  downlineCount: number;
+  trustTier: 'NEW' | 'BUILDING' | 'TRUSTED' | 'ELITE' | null;
+  trustScore: number | null;
+}
+
+interface DownlineEntry {
+  id: string;
+  referralCode: string;
+  name: string | null;
+  email: string | null;
+  trustTier: 'NEW' | 'BUILDING' | 'TRUSTED' | 'ELITE' | null;
 }
 
 interface Customer {
@@ -111,9 +129,11 @@ export default function PartnerDetailPage() {
   const partnerId = params.id as string;
 
   const [partner, setPartner] = useState<Partner | null>(null);
+  const [downline, setDownline] = useState<DownlineEntry[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [commissions, setCommissions] = useState<Commission[]>([]);
   const [payouts, setPayouts] = useState<Payout[]>([]);
+  const [partnerCurrencySymbol, setPartnerCurrencySymbol] = useState('₹');
   const [loading, setLoading] = useState(true);
   const [showPayoutModal, setShowPayoutModal] = useState(false);
   const [selectedCommissions, setSelectedCommissions] = useState<string[]>([]);
@@ -140,21 +160,46 @@ export default function PartnerDetailPage() {
       const res = await fetch('/api/admin/affiliates');
       if (res.ok) {
         const data = await res.json();
+        if (data.currencySymbol) setPartnerCurrencySymbol(data.currencySymbol);
         const affiliate = data.affiliates?.find((a: any) => a.id === partnerId);
         if (affiliate) {
           setPartner({
             id: affiliate.id,
-            name: affiliate.name,
-            email: affiliate.email,
+            name: affiliate.user?.name ?? affiliate.name,
+            email: affiliate.user?.email ?? affiliate.email,
             referralCode: affiliate.referralCode,
             partnerGroup: affiliate.partnerGroup,
             commissionRate: affiliate.commissionRate || 0.20,
-            status: affiliate.status,
+            status: affiliate.user?.status ?? affiliate.status,
             totalClicks: affiliate.totalClicks || 0,
             totalLeads: affiliate.totalLeads || 0,
             totalRevenue: affiliate.totalRevenue || 0,
             createdAt: affiliate.createdAt,
+            referredBy: affiliate.referredBy
+              ? {
+                  id: affiliate.referredBy.id,
+                  referralCode: affiliate.referredBy.referralCode,
+                  name: affiliate.referredBy.user?.name ?? null,
+                  email: affiliate.referredBy.user?.email ?? null,
+                }
+              : null,
+            downlineCount: affiliate._count?.downline ?? 0,
+            trustTier: affiliate.trustScore?.tier ?? null,
+            trustScore: affiliate.trustScore?.score ?? null,
           });
+          // Build the downline list locally from the affiliates payload
+          const directDownline = (data.affiliates as Array<{ id: string; referredById: string | null; referralCode: string; user?: { name: string; email: string }; trustScore?: { tier: string } }>).filter(
+            (a) => a.referredById === affiliate.id
+          );
+          setDownline(
+            directDownline.map((a) => ({
+              id: a.id,
+              referralCode: a.referralCode,
+              name: a.user?.name ?? null,
+              email: a.user?.email ?? null,
+              trustTier: (a.trustScore?.tier as DownlineEntry['trustTier']) ?? null,
+            }))
+          );
         }
       }
     } catch (error) {
@@ -288,8 +333,10 @@ export default function PartnerDetailPage() {
     );
   };
 
-  const formatCurrency = (cents: number) =>
-    `\u20B9${(cents / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  // Currency comes from the program (we don't carry per-partner currency).
+  // Delegates to the centralized formatter so crypto codes (USDT) get
+  // suffix-style formatting; fiat codes get the symbol prefix.
+  const formatCurrency = (cents: number) => formatCurrencyLib(cents, partnerCurrencySymbol);
 
   const formatDate = (date: string) =>
     new Date(date).toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric' });
@@ -522,6 +569,73 @@ export default function PartnerDetailPage() {
               </CardContent>
             </Card>
           </div>
+
+          {/* Hierarchy & Trust (Features D + E) */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Hierarchy &amp; Trust</CardTitle>
+              <CardDescription>Who recruited this partner, who they&apos;ve recruited, and their trust tier</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-4 md:grid-cols-3">
+                <div>
+                  <p className="text-xs uppercase tracking-wider text-muted-foreground">Referred By</p>
+                  {partner.referredBy ? (
+                    <button
+                      onClick={() => router.push(`/admin/partners/${partner.referredBy!.id}`)}
+                      className="mt-1 block text-left hover:underline"
+                    >
+                      <div className="text-sm font-medium">{partner.referredBy.name ?? partner.referredBy.referralCode}</div>
+                      <div className="text-xs text-muted-foreground">{partner.referredBy.email ?? partner.referredBy.referralCode}</div>
+                    </button>
+                  ) : (
+                    <p className="mt-1 text-sm text-muted-foreground">No upline</p>
+                  )}
+                </div>
+                <div>
+                  <p className="text-xs uppercase tracking-wider text-muted-foreground">Downline</p>
+                  <p className="mt-1 text-2xl font-bold">{partner.downlineCount}</p>
+                  <p className="text-xs text-muted-foreground">direct recruits</p>
+                </div>
+                <div>
+                  <p className="text-xs uppercase tracking-wider text-muted-foreground">Trust Tier</p>
+                  {partner.trustTier ? (
+                    <>
+                      <p className="mt-1 text-lg font-semibold">{partner.trustTier}</p>
+                      <p className="text-xs text-muted-foreground">{partner.trustScore ?? 0} / 1000</p>
+                    </>
+                  ) : (
+                    <p className="mt-1 text-sm text-muted-foreground">No score yet</p>
+                  )}
+                </div>
+              </div>
+              {downline.length > 0 && (
+                <>
+                  <Separator />
+                  <div>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Direct recruits</p>
+                    <div className="space-y-2">
+                      {downline.map((d) => (
+                        <button
+                          key={d.id}
+                          onClick={() => router.push(`/admin/partners/${d.id}`)}
+                          className="flex w-full items-center justify-between rounded-md border p-3 text-left hover:bg-muted/50"
+                        >
+                          <div>
+                            <div className="text-sm font-medium">{d.name ?? d.referralCode}</div>
+                            <div className="text-xs text-muted-foreground">{d.email ?? '—'} · <code className="font-mono">{d.referralCode}</code></div>
+                          </div>
+                          {d.trustTier && (
+                            <span className="rounded-md bg-muted px-2 py-1 text-xs font-semibold">{d.trustTier}</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         {/* Customers */}

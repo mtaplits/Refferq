@@ -48,8 +48,34 @@ import {
   TrendingUp,
   ArrowRight,
   Banknote,
+  Award,
+  Gift,
+  ExternalLink,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import NextLink from 'next/link';
+import { formatCurrency as formatCurrencyLib } from '@/lib/currency';
+
+type TrustTier = 'NEW' | 'BUILDING' | 'TRUSTED' | 'ELITE';
+
+const TIER_RANGES: Record<TrustTier, string> = {
+  NEW: '0-199',
+  BUILDING: '200-499',
+  TRUSTED: '500-799',
+  ELITE: '800-1000',
+};
+const TIER_NEXT: Record<TrustTier, number | null> = {
+  NEW: 200,
+  BUILDING: 500,
+  TRUSTED: 800,
+  ELITE: null,
+};
+const TIER_COLOR: Record<TrustTier, string> = {
+  NEW: 'text-muted-foreground bg-muted',
+  BUILDING: 'text-blue-700 bg-blue-100 dark:text-blue-200 dark:bg-blue-950',
+  TRUSTED: 'text-emerald-700 bg-emerald-100 dark:text-emerald-200 dark:bg-emerald-950',
+  ELITE: 'text-amber-700 bg-amber-100 dark:text-amber-200 dark:bg-amber-950',
+};
 
 interface AffiliateStats {
   totalEarnings: number;
@@ -75,6 +101,12 @@ interface Referral {
   createdAt: string;
 }
 
+interface TrustInfo {
+  score: number;
+  tier: TrustTier;
+  attestationUid: string | null;
+}
+
 export default function AffiliateDashboard() {
   const { user, loading: authLoading } = useAuth();
   const [stats, setStats] = useState<AffiliateStats | null>(null);
@@ -83,6 +115,10 @@ export default function AffiliateDashboard() {
   const [loading, setLoading] = useState(true);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [copied, setCopied] = useState<'link' | 'code' | null>(null);
+  const [trust, setTrust] = useState<TrustInfo | null>(null);
+  const [trustEnabled, setTrustEnabled] = useState(true);
+  const [treasuryType, setTreasuryType] = useState<'FIAT' | 'CRYPTO'>('FIAT');
+  const [creditsAvailable, setCreditsAvailable] = useState(0);
 
   // Referral form state
   const [showSubmitModal, setShowSubmitModal] = useState(false);
@@ -121,6 +157,20 @@ export default function AffiliateDashboard() {
         });
         setReferrals(data.referrals || []);
         setCurrencySymbol(data.currencySymbol || '₹');
+        setTrust(data.trust || null);
+        setTrustEnabled(data.program?.trustEnabled ?? true);
+        setTreasuryType((data.program?.treasuryType as 'FIAT' | 'CRYPTO') ?? 'FIAT');
+      }
+      // Fetch credits count separately
+      try {
+        const cr = await fetch('/api/affiliate/credits');
+        if (cr.ok) {
+          const cd = await cr.json();
+          const count = (cd.earnings ?? []).filter((e: { status: string }) => e.status === 'EARNED').length;
+          setCreditsAvailable(count);
+        }
+      } catch {
+        /* non-fatal */
       }
     } catch (error) {
       console.error('Failed to load dashboard data:', error);
@@ -189,8 +239,8 @@ export default function AffiliateDashboard() {
   const formatDate = (date: string) =>
     new Date(date).toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric' });
 
-  const formatCurrency = (cents: number) =>
-    `${currencySymbol}${(cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  // Centralized formatter handles fiat prefix (`$10.00`) and crypto suffix (`10.00 USDT`).
+  const formatCurrency = (cents: number) => formatCurrencyLib(cents, currencySymbol);
 
   const getStatusBadge = (status: string) => {
     const map: Record<string, { variant: 'default' | 'secondary' | 'destructive' | 'outline'; icon: React.ElementType }> = {
@@ -256,7 +306,7 @@ export default function AffiliateDashboard() {
       </motion.div>
 
       {/* Stats */}
-      <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         {[
           {
             label: 'Available Balance',
@@ -279,6 +329,7 @@ export default function AffiliateDashboard() {
           { label: 'Total Clicks', value: stats?.totalClicks || 0, icon: MousePointerClick, color: 'text-blue-600', bg: 'bg-blue-500/10' },
           { label: 'Total Leads', value: stats?.totalLeads || 0, icon: Target, color: 'text-rose-600', bg: 'bg-rose-500/10' },
           { label: 'Conv. Rate', value: `${stats?.conversionRate?.toFixed(1) || '0.0'}%`, icon: TrendingUp, color: 'text-violet-600', bg: 'bg-violet-500/10' },
+          { label: 'Credits', value: creditsAvailable, icon: Gift, color: 'text-pink-600', bg: 'bg-pink-500/10', description: creditsAvailable > 0 ? 'Available to redeem' : 'Earn by hitting milestones' },
         ].map((stat, i) => (
           <motion.div
             key={i}
@@ -312,6 +363,61 @@ export default function AffiliateDashboard() {
           </motion.div>
         ))}
       </div>
+
+      {/* Trust Score (Feature E) */}
+      {trustEnabled && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Award className="h-4 w-4" />
+                  Trust Score
+                </CardTitle>
+                <CardDescription>
+                  Better track record = shorter holds, optional rate boosts, and premium credit eligibility
+                </CardDescription>
+              </div>
+              <div className={`rounded-md px-3 py-1.5 text-sm font-semibold ${TIER_COLOR[(trust?.tier ?? 'NEW') as TrustTier]}`}>
+                {trust?.tier ?? 'NEW'}
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid gap-3 md:grid-cols-3">
+              <div>
+                <p className="text-xs uppercase tracking-wider text-muted-foreground">Score</p>
+                <p className="text-2xl font-bold">{trust?.score ?? 0}<span className="text-sm text-muted-foreground">/1000</span></p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-wider text-muted-foreground">Tier range</p>
+                <p className="text-sm font-medium">{TIER_RANGES[(trust?.tier ?? 'NEW') as TrustTier]}</p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-wider text-muted-foreground">Next tier</p>
+                <p className="text-sm font-medium">
+                  {TIER_NEXT[(trust?.tier ?? 'NEW') as TrustTier] !== null
+                    ? `${Math.max(0, (TIER_NEXT[(trust?.tier ?? 'NEW') as TrustTier] as number) - (trust?.score ?? 0))} pts to go`
+                    : 'Max tier — well done!'}
+                </p>
+              </div>
+            </div>
+            {treasuryType === 'CRYPTO' && trust?.attestationUid && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>EAS attestation:</span>
+                <code className="rounded bg-muted px-2 py-0.5 font-mono">{trust.attestationUid.slice(0, 14)}…</code>
+                <NextLink
+                  href={`https://offchain.attest.sh/attestation/view/${trust.attestationUid}`}
+                  target="_blank"
+                  className="inline-flex items-center gap-1 text-primary hover:underline"
+                >
+                  View <ExternalLink className="h-3 w-3" />
+                </NextLink>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Referral Links */}
       <Card>

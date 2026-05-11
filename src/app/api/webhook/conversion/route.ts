@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db, prisma } from '@/lib/prisma';
+import { isValidCurrencyForTreasury } from '@/lib/currency-allowlist';
+import { multipliersFor } from '@/lib/trust/tiers';
+import { tierOf } from '@/lib/trust/compute';
+import type { Affiliate, CommissionRule, TrustTier } from '@prisma/client';
 import crypto from 'crypto';
 
 // ─── Webhook Signature Verification ────────────────────────────
@@ -18,7 +22,6 @@ async function verifyApiKey(request: NextRequest): Promise<boolean> {
   const apiKey = request.headers.get('x-api-key');
   if (!apiKey) return false;
 
-  // Hash the incoming key and look up by keyHash for secure comparison
   const keyHash = crypto.createHash('sha256').update(apiKey).digest('hex');
   const key = await prisma.apiKey.findFirst({
     where: { keyHash, isActive: true }
@@ -27,22 +30,32 @@ async function verifyApiKey(request: NextRequest): Promise<boolean> {
   return !!key;
 }
 
+function computeAmount(baseCents: number, rule: { type: string; value: number } | null, defaultRate = 15): number {
+  if (!rule) {
+    // legacy default: 15% percentage
+    return Math.floor((baseCents * defaultRate) / 100);
+  }
+  if (rule.type === 'PERCENTAGE') {
+    return Math.floor((baseCents * rule.value) / 100);
+  }
+  if (rule.type === 'FIXED') {
+    return rule.value;
+  }
+  return 0;
+}
+
 export async function POST(request: NextRequest) {
   try {
-    // ─── Authentication: Require API key OR webhook signature ───
+    // ─── Authentication ───
     const rawBody = await request.text();
     const webhookSecret = process.env.WEBHOOK_SECRET;
     const signature = request.headers.get('x-webhook-signature') || request.headers.get('x-refferq-signature');
 
     let authenticated = false;
-
-    // Method 1: API key authentication
     const apiKey = request.headers.get('x-api-key');
     if (apiKey) {
       authenticated = await verifyApiKey(request);
     }
-
-    // Method 2: Webhook signature verification
     if (!authenticated && webhookSecret && signature) {
       authenticated = verifyWebhookSignature(rawBody, signature, webhookSecret);
     }
@@ -58,14 +71,13 @@ export async function POST(request: NextRequest) {
     const {
       event_type,
       amount_cents,
-      currency = 'USD',
+      currency: bodyCurrency,
       customer_email,
       attribution_key,
       referral_code,
       event_metadata = {},
     } = body;
 
-    // Validate required fields
     if (!event_type || !customer_email) {
       return NextResponse.json(
         { success: false, message: 'Event type and customer email are required' },
@@ -73,33 +85,40 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    let affiliate = null;
-    let attributionMethod = 'none';
+    // ─── Program settings (treasury, MLM, trust, hold) ───
+    const settings = await prisma.programSettings.findFirst();
+    const programCurrency = settings?.currency || 'USD';
+    const treasuryType = (settings?.treasuryType ?? 'FIAT') as 'FIAT' | 'CRYPTO';
+    const currency = bodyCurrency || programCurrency;
 
-    // Try to find affiliate through attribution key first
+    if (!isValidCurrencyForTreasury(currency, treasuryType)) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: `Currency ${currency} does not match program treasury type ${treasuryType}`,
+        },
+        { status: 400 }
+      );
+    }
+
+    let attributionMethod = 'none';
     if (attribution_key) {
-      // In a real implementation, this would be stored in Redis
-      // For this simulation, we'll comment out the problematic call
-      // const recentClicks = await db.getClicksByReferralId('some-referral-id');
-      // For demo purposes, we'll use referral_code method
       attributionMethod = 'attribution_key';
     }
 
-    // Fallback to referral code
-    if (!affiliate && referral_code) {
-      affiliate = await db.getAffiliateByReferralCode(referral_code);
+    let directAffiliate: Awaited<ReturnType<typeof db.getAffiliateByReferralCode>> = null;
+    if (referral_code) {
+      directAffiliate = await db.getAffiliateByReferralCode(referral_code);
       attributionMethod = 'referral_code';
     }
 
-    // If no affiliate found, log the conversion but don't create commission
-    if (!affiliate) {
+    if (!directAffiliate) {
       console.log('Conversion received but no affiliate attribution found:', {
         event_type,
         customer_email,
         attribution_key,
         referral_code,
       });
-
       return NextResponse.json({
         success: true,
         message: 'Conversion logged (no attribution)',
@@ -107,9 +126,9 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Create conversion record
+    // ─── Create conversion record ───
     const conversion = await db.createConversion({
-      affiliateId: affiliate.id,
+      affiliateId: directAffiliate.id,
       eventType: event_type,
       amountCents: amount_cents || 0,
       currency,
@@ -122,44 +141,97 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // Calculate commission
-    const commissionRules = await db.getCommissionRules();
-    let applicableRule = commissionRules.find((rule: any) => rule.isDefault);
+    // ─── Build upline chain (Feature D — MLM) ───
+    const mlmEnabled = settings?.mlmEnabled ?? false;
+    const maxLevels = mlmEnabled ? Math.max(1, settings?.mlmMaxLevels ?? 1) : 1;
 
-    const commissionRate = applicableRule?.value || 15;
-    let commissionAmount = 0;
-
-    if (applicableRule?.type === 'PERCENTAGE' && amount_cents) {
-      commissionAmount = Math.floor((amount_cents * commissionRate) / 100);
-    } else if (applicableRule?.type === 'FIXED') {
-      commissionAmount = commissionRate;
+    interface ChainNode {
+      affiliate: Pick<Affiliate, 'id' | 'userId' | 'referredById'>;
+      level: number;
+    }
+    const chain: ChainNode[] = [];
+    const visited = new Set<string>();
+    let cursor: Pick<Affiliate, 'id' | 'userId' | 'referredById'> | null = {
+      id: directAffiliate.id,
+      userId: directAffiliate.userId,
+      referredById: (directAffiliate as Affiliate).referredById ?? null,
+    };
+    let level = 1;
+    while (cursor && level <= maxLevels && !visited.has(cursor.id)) {
+      visited.add(cursor.id);
+      chain.push({ affiliate: cursor, level });
+      if (level >= maxLevels || !cursor.referredById) break;
+      cursor = await prisma.affiliate.findUnique({
+        where: { id: cursor.referredById },
+        select: { id: true, userId: true, referredById: true },
+      });
+      level++;
     }
 
-    // ─── Commission Hold Period ─────────────────────────────────
-    // Fetch hold days from ProgramSettings (default 30)
-    const settings = await prisma.programSettings.findFirst();
-    const holdDays = (settings as any)?.commissionHoldDays ?? 30;
-    const maturesAt = new Date();
-    maturesAt.setDate(maturesAt.getDate() + holdDays);
+    // ─── Per-level commission rules ───
+    const rulesByLevel = new Map<number, CommissionRule | null>();
+    const levelsNeeded = Array.from(new Set(chain.map((c) => c.level)));
+    await Promise.all(
+      levelsNeeded.map(async (lvl) => {
+        const rule = await prisma.commissionRule.findFirst({
+          where: { level: lvl, isDefault: true, isActive: true },
+        });
+        rulesByLevel.set(lvl, rule);
+      })
+    );
+    // Fallback: if no level-1 rule, fall back to any active default rule (legacy behavior)
+    if (!rulesByLevel.get(1)) {
+      const fallback = await prisma.commissionRule.findFirst({
+        where: { isDefault: true, isActive: true },
+      });
+      rulesByLevel.set(1, fallback);
+    }
 
-    // Create commission record with maturesAt (status stays PENDING until maturation)
-    const commission = await prisma.commission.create({
-      data: {
-        conversionId: conversion.id,
-        affiliateId: affiliate.id,
-        userId: affiliate.userId,
-        amountCents: commissionAmount,
-        rate: commissionRate,
-        status: 'PENDING',
-        maturesAt,
-      },
-    });
+    // ─── Hold period & trust (Feature E) ───
+    const holdDays = settings?.commissionHoldDays ?? 30;
 
-    // NOTE: We do NOT update balanceCents here anymore.
-    // Balance is only updated when the commission matures (PENDING → APPROVED).
-    // This protects against refunds during the hold period.
+    // ─── Create one commission per upline level ───
+    const commissionsCreated: { id: string; affiliateId: string; level: number; amountCents: number; rate: number }[] = [];
 
-    // Log audit event
+    for (const { affiliate: a, level: lvl } of chain) {
+      const baseRule = rulesByLevel.get(lvl) ?? rulesByLevel.get(1) ?? null;
+      const tier: TrustTier = await tierOf(a.id);
+      const { holdPctOff, commissionBoost } = multipliersFor(tier, settings);
+
+      const baseRate = baseRule?.value ?? 15;
+      const effectiveRate = baseRule?.type === 'FIXED' ? baseRate : baseRate + commissionBoost;
+      const amt =
+        baseRule?.type === 'FIXED'
+          ? baseRule.value
+          : Math.floor(((amount_cents || 0) * Math.max(0, effectiveRate)) / 100);
+
+      const effectiveHoldDays = Math.max(0, holdDays * (1 - Math.max(0, Math.min(100, holdPctOff)) / 100));
+      const maturesAt = new Date(Date.now() + effectiveHoldDays * 24 * 60 * 60 * 1000);
+
+      const created = await prisma.commission.create({
+        data: {
+          conversionId: conversion.id,
+          affiliateId: a.id,
+          userId: a.userId,
+          amountCents: amt,
+          rate: effectiveRate,
+          status: 'PENDING',
+          maturesAt,
+          level: lvl,
+          sourceAffiliateId: lvl > 1 ? directAffiliate.id : null,
+        },
+      });
+
+      commissionsCreated.push({
+        id: created.id,
+        affiliateId: a.id,
+        level: lvl,
+        amountCents: amt,
+        rate: effectiveRate,
+      });
+    }
+
+    // ─── Audit log ───
     await db.createAuditLog({
       actorId: 'system',
       action: 'conversion_tracked',
@@ -168,9 +240,12 @@ export async function POST(request: NextRequest) {
       payload: {
         event_type,
         amount_cents,
-        commission_amount: commissionAmount,
-        affiliate_id: affiliate.id,
+        currency,
+        treasury_type: treasuryType,
         attributionMethod,
+        mlm_enabled: mlmEnabled,
+        mlm_levels: chain.length,
+        commissions: commissionsCreated,
       },
     });
 
@@ -179,7 +254,7 @@ export async function POST(request: NextRequest) {
       message: 'Conversion tracked successfully',
       attributed: true,
       conversion,
-      commission,
+      commissions: commissionsCreated,
       attributionMethod,
     });
   } catch (error) {

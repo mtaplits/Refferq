@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { logAuditAction } from '@/lib/audit';
+import { getProvider } from '@/lib/crypto-disbursement';
 
 
 interface JWTPayload {
@@ -68,15 +69,14 @@ export async function GET(request: NextRequest) {
     }
 
     // Fetch payouts from database
-    const payouts = await (prisma as any).payout.findMany({
+    const payouts = await prisma.payout.findMany({
       where,
       include: {
         affiliate: {
           select: {
             id: true,
-            name: true,
-            email: true,
             referralCode: true,
+            user: { select: { name: true, email: true } },
           },
         },
       },
@@ -86,11 +86,11 @@ export async function GET(request: NextRequest) {
     });
 
     // Format response
-    const formattedPayouts = payouts.map((payout: any) => ({
+    const formattedPayouts = payouts.map((payout) => ({
       id: payout.id,
       affiliateId: payout.affiliateId,
-      affiliateName: payout.affiliate.name,
-      affiliateEmail: payout.affiliate.email,
+      affiliateName: payout.affiliate.user.name,
+      affiliateEmail: payout.affiliate.user.email,
       amountCents: payout.amountCents,
       commissionCount: payout.commissionCount || 0,
       status: payout.status,
@@ -193,13 +193,48 @@ export async function POST(request: NextRequest) {
       0
     );
 
-    // Create payout record
-    const payout = await (prisma as any).payout.create({
+    // ─── Crypto disbursement (Feature B) ───
+    // USDT_ONCHAIN payouts route through the configured crypto provider.
+    // The provider broadcasts the on-chain transfer and POSTs status updates
+    // to our /api/webhook/payout-status receiver; commissions stay APPROVED
+    // (linked to the payout) until that callback confirms.
+    const isCryptoMethod = method === 'USDT_ONCHAIN';
+    let validatedWalletAddress: string | null = null;
+    if (isCryptoMethod) {
+      const settings = await prisma.programSettings.findFirst();
+      const treasuryType = (settings?.treasuryType ?? 'FIAT') as 'FIAT' | 'CRYPTO';
+      if (treasuryType !== 'CRYPTO') {
+        return NextResponse.json(
+          { error: 'USDT_ONCHAIN payouts require a CRYPTO-treasury program' },
+          { status: 400 }
+        );
+      }
+      if (settings?.currency !== 'USDT') {
+        return NextResponse.json(
+          { error: 'USDT_ONCHAIN payouts require the program currency to be USDT' },
+          { status: 400 }
+        );
+      }
+      const payoutDetails = (affiliate.payoutDetails as Record<string, unknown> | null) ?? {};
+      const walletAddress = typeof payoutDetails.walletAddress === 'string' ? payoutDetails.walletAddress : '';
+      if (!walletAddress) {
+        return NextResponse.json(
+          { error: 'Affiliate has no walletAddress in payoutDetails' },
+          { status: 400 }
+        );
+      }
+      validatedWalletAddress = walletAddress;
+    }
+
+    // Create payout record. Crypto payouts start in PROCESSING; fiat payouts
+    // start in PENDING (existing behavior).
+    const payout = await prisma.payout.create({
       data: {
         affiliateId,
+        userId: affiliate.userId,
         amountCents: totalAmountCents,
         commissionCount: commissions.length,
-        status: 'PENDING',
+        status: isCryptoMethod ? 'PROCESSING' : 'PENDING',
         method: method || 'Bank Transfer',
         notes: notes || null,
         createdBy: auth.user.id,
@@ -210,8 +245,7 @@ export async function POST(request: NextRequest) {
         affiliate: {
           select: {
             id: true,
-            name: true,
-            email: true,
+            user: { select: { name: true, email: true } },
           },
         },
       },
@@ -223,21 +257,109 @@ export async function POST(request: NextRequest) {
       action: 'CREATE_PAYOUT',
       objectType: 'PAYOUT',
       objectId: payout.id,
-      payload: { amountCents: totalAmountCents, affiliateId }
+      payload: { amountCents: totalAmountCents, affiliateId, method, isCryptoMethod }
     });
 
-    // Update commissions to mark as PAID and link to payout
-    await prisma.commission.updateMany({
-      where: {
-        id: { in: commissionIds },
-      },
-      data: {
-        status: 'PAID',
-        payoutId: payout.id,
-        paidAt: new Date(),
-        updatedAt: new Date(),
-      },
-    });
+    if (isCryptoMethod) {
+      // Link commissions to the payout but keep them APPROVED. They flip to
+      // PAID only when the SHKeeper callback confirms on-chain success.
+      // Decrement balance NOW so the same commissions can't be picked up by
+      // another payout — the balance invariant is `sum(APPROVED w/ payoutId=null)`.
+      await prisma.commission.updateMany({
+        where: { id: { in: commissionIds } },
+        data: { payoutId: payout.id, updatedAt: new Date() },
+      });
+      await prisma.affiliate.update({
+        where: { id: affiliateId },
+        data: { balanceCents: { decrement: totalAmountCents } },
+      });
+
+      try {
+        const provider = getProvider();
+        const baseUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, '') || '';
+        const callbackSecret = process.env.SHKEEPER_CALLBACK_SECRET || '';
+        const callbackUrl = `${baseUrl}/api/webhook/payout-status${callbackSecret ? `?secret=${encodeURIComponent(callbackSecret)}` : ''}`;
+        const sendResult = await provider.send({
+          toAddress: validatedWalletAddress!,
+          amountCents: totalAmountCents,
+          payoutId: payout.id,
+          callbackUrl,
+        });
+        if (sendResult.status === 'failed') {
+          await prisma.payout.update({
+            where: { id: payout.id },
+            data: {
+              status: 'FAILED',
+              txStatus: 'failed',
+              providerError: sendResult.error ?? 'unknown error',
+              updatedAt: new Date(),
+            },
+          });
+          // Refund: unlink commissions and re-credit balance.
+          await prisma.commission.updateMany({
+            where: { payoutId: payout.id },
+            data: { payoutId: null, updatedAt: new Date() },
+          });
+          await prisma.affiliate.update({
+            where: { id: affiliateId },
+            data: { balanceCents: { increment: totalAmountCents } },
+          });
+          return NextResponse.json(
+            { error: 'Crypto provider rejected the payout', detail: sendResult.error },
+            { status: 502 }
+          );
+        }
+        await prisma.payout.update({
+          where: { id: payout.id },
+          data: {
+            providerTaskId: sendResult.taskId,
+            txStatus: sendResult.status,
+            updatedAt: new Date(),
+          },
+        });
+      } catch (cryptoErr) {
+        const message = cryptoErr instanceof Error ? cryptoErr.message : String(cryptoErr);
+        await prisma.payout.update({
+          where: { id: payout.id },
+          data: {
+            status: 'FAILED',
+            txStatus: 'failed',
+            providerError: message,
+            updatedAt: new Date(),
+          },
+        });
+        await prisma.commission.updateMany({
+          where: { payoutId: payout.id },
+          data: { payoutId: null, updatedAt: new Date() },
+        });
+        await prisma.affiliate.update({
+          where: { id: affiliateId },
+          data: { balanceCents: { increment: totalAmountCents } },
+        });
+        return NextResponse.json(
+          { error: 'Crypto provider failed', detail: message },
+          { status: 502 }
+        );
+      }
+    } else {
+      // Fiat path: mark commissions PAID immediately AND decrement balance.
+      // Admin sends money out-of-band and flips the payout to COMPLETED later;
+      // the balance + status flip happens here so the same commissions can't
+      // be double-paid via auto-payout or another manual payout.
+      await prisma.commission.updateMany({
+        where: { id: { in: commissionIds } },
+        data: {
+          status: 'PAID',
+          payoutId: payout.id,
+          paidAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
+      await prisma.affiliate.update({
+        where: { id: affiliateId },
+        data: { balanceCents: { decrement: totalAmountCents } },
+      });
+    }
 
     // Send email notification to affiliate
     try {
@@ -250,7 +372,7 @@ export async function POST(request: NextRequest) {
       if (affiliateUser?.email) {
         const { emailService } = await import('@/lib/email');
         await emailService.sendPayoutCreatedEmail(affiliateUser.email, {
-          affiliateName: payout.affiliate.name || affiliateUser.name || 'Partner',
+          affiliateName: payout.affiliate.user?.name || affiliateUser.name || 'Partner',
           amountCents: totalAmountCents,
           commissionCount: commissions.length,
           payoutId: payout.id,
@@ -267,8 +389,8 @@ export async function POST(request: NextRequest) {
       payout: {
         id: payout.id,
         affiliateId: payout.affiliateId,
-        affiliateName: payout.affiliate.name,
-        affiliateEmail: payout.affiliate.email,
+        affiliateName: payout.affiliate.user?.name,
+        affiliateEmail: payout.affiliate.user?.email,
         amountCents: payout.amountCents,
         commissionCount: payout.commissionCount,
         status: payout.status,
@@ -321,15 +443,13 @@ export async function PUT(request: NextRequest) {
     if (notes !== undefined) updateData.notes = notes;
 
     // Update payout
-    // Update payout
-    const payout = await (prisma as any).payout.update({
+    const payout = await prisma.payout.update({
       where: { id },
       data: updateData,
       include: {
         affiliate: {
           select: {
-            name: true,
-            email: true,
+            user: { select: { name: true, email: true } },
           },
         },
       },
@@ -356,7 +476,7 @@ export async function PUT(request: NextRequest) {
         if (affiliateUser?.email) {
           const { emailService } = await import('@/lib/email');
           await emailService.sendPayoutCompletedEmail(affiliateUser.email, {
-            affiliateName: payout.affiliate.name || affiliateUser.name || 'Partner',
+            affiliateName: payout.affiliate.user?.name || affiliateUser.name || 'Partner',
             amountCents: payout.amountCents,
             commissionCount: payout.commissionCount,
             payoutId: payout.id,
@@ -375,8 +495,8 @@ export async function PUT(request: NextRequest) {
       payout: {
         id: payout.id,
         affiliateId: payout.affiliateId,
-        affiliateName: payout.affiliate.name,
-        affiliateEmail: payout.affiliate.email,
+        affiliateName: payout.affiliate.user?.name,
+        affiliateEmail: payout.affiliate.user?.email,
         amountCents: payout.amountCents,
         commissionCount: payout.commissionCount,
         status: payout.status,
@@ -411,7 +531,7 @@ export async function DELETE(request: NextRequest) {
     }
 
     // Delete payout
-    await (prisma as any).payout.delete({
+    await prisma.payout.delete({
       where: { id },
     });
 

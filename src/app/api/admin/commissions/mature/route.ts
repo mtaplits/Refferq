@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { logAuditAction } from '@/lib/audit';
+import { evaluateCredits } from '@/lib/credits/evaluate';
+import { computeTrustScore } from '@/lib/trust/compute';
 
 /**
  * POST /api/admin/commissions/mature
@@ -88,6 +90,49 @@ export async function POST(request: NextRequest) {
             });
         }
 
+        // ─── Feature E: recompute trust score per affected affiliate ───
+        // A fresh approved commission can promote an affiliate into a
+        // higher trust tier; we recompute immediately so the next
+        // conversion's hold/boost reflect the new state.
+        const trustUpdates: { affiliateId: string; score: number; tier: string }[] = [];
+        for (const affiliateId of affiliateUpdates.keys()) {
+            try {
+                const { score, tier, inputs } = await computeTrustScore(affiliateId);
+                await prisma.trustScore.upsert({
+                    where: { affiliateId },
+                    create: {
+                        affiliateId,
+                        score,
+                        tier,
+                        inputs: inputs as object,
+                        lastComputedAt: now,
+                    },
+                    update: {
+                        score,
+                        tier,
+                        inputs: inputs as object,
+                        lastComputedAt: now,
+                    },
+                });
+                trustUpdates.push({ affiliateId, score, tier });
+            } catch (err) {
+                console.error('Trust recompute failed for affiliate', affiliateId, err);
+            }
+        }
+
+        // ─── Feature C: evaluate milestone-based credit buckets ───
+        const creditsIssued: { affiliateId: string; count: number }[] = [];
+        for (const affiliateId of affiliateUpdates.keys()) {
+            try {
+                const { earned } = await evaluateCredits(affiliateId);
+                if (earned.length > 0) {
+                    creditsIssued.push({ affiliateId, count: earned.length });
+                }
+            } catch (err) {
+                console.error('Credit evaluation failed for affiliate', affiliateId, err);
+            }
+        }
+
         // Log audit
         await logAuditAction({
             actorId: userId || 'system-cron',
@@ -98,6 +143,8 @@ export async function POST(request: NextRequest) {
                 count: maturedIds.length,
                 totalCents: Array.from(affiliateUpdates.values()).reduce((a, b) => a + b, 0),
                 affiliateCount: affiliateUpdates.size,
+                trustUpdates,
+                creditsIssued,
             },
         });
 
@@ -106,6 +153,8 @@ export async function POST(request: NextRequest) {
             message: `${maturedIds.length} commission(s) matured and approved`,
             matured: maturedIds.length,
             affiliatesUpdated: affiliateUpdates.size,
+            trustUpdates,
+            creditsIssued,
         });
     } catch (error) {
         console.error('Commission maturation error:', error);

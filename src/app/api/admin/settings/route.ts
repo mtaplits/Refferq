@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { revalidateTag } from 'next/cache';
 import { prisma } from '@/lib/prisma';
 import { logAuditAction } from '@/lib/audit';
+import {
+  isValidCurrencyForTreasury,
+  type TreasuryType,
+} from '@/lib/currency-allowlist';
 
 
 export async function GET(request: NextRequest) {
@@ -110,13 +114,56 @@ export async function PUT(request: NextRequest) {
       'programName', 'productName', 'websiteUrl', 'currency', 'portalSubdomain',
       'companyName', 'companyLogo', 'primaryColor', 'secondaryColor',
       'cookieDuration', 'minimumPayout', 'payoutFrequency', 'autoApprove',
-      'commissionType', 'commissionValue', 'brandingEnabled', 'commissionHoldDays'
+      'commissionType', 'commissionValue', 'brandingEnabled', 'commissionHoldDays',
+      // Feature A — treasury
+      'treasuryType',
+      // Feature D — MLM
+      'mlmEnabled', 'mlmMaxLevels', 'mlmCommissionMode',
+      // Feature E — trust multipliers
+      'trustEnabled',
+      'trustNewHoldPctOff', 'trustBuildingHoldPctOff', 'trustTrustedHoldPctOff', 'trustEliteHoldPctOff',
+      'trustNewCommissionBoost', 'trustBuildingCommissionBoost', 'trustTrustedCommissionBoost', 'trustEliteCommissionBoost',
     ];
     const sanitizedData: Record<string, any> = {};
     for (const key of allowedFields) {
       if (key in body && body[key] !== undefined) {
         sanitizedData[key] = body[key];
       }
+    }
+
+    // ─── Treasury lock + cross-validation ───
+    // 1. If treasuryType is changing AND any Conversion already exists for this
+    //    program, reject — switching treasury invalidates the bookkeeping.
+    //    An admin override (`confirmTreasuryMigration: true`) bypasses this.
+    // 2. The chosen currency must match the (possibly new) treasury type.
+    const nextTreasury: TreasuryType =
+      (sanitizedData.treasuryType ?? programSettings.treasuryType ?? 'FIAT') as TreasuryType;
+    const nextCurrency: string = sanitizedData.currency ?? programSettings.currency;
+
+    if (
+      'treasuryType' in sanitizedData &&
+      sanitizedData.treasuryType !== programSettings.treasuryType &&
+      !body.confirmTreasuryMigration
+    ) {
+      const conversionCount = await prisma.conversion.count();
+      if (conversionCount > 0) {
+        return NextResponse.json(
+          {
+            error:
+              'Treasury type is locked — this program already has conversion activity. Pass `confirmTreasuryMigration: true` to override.',
+          },
+          { status: 400 }
+        );
+      }
+    }
+
+    if (!isValidCurrencyForTreasury(nextCurrency, nextTreasury)) {
+      return NextResponse.json(
+        {
+          error: `Currency ${nextCurrency} does not match treasury type ${nextTreasury}`,
+        },
+        { status: 400 }
+      );
     }
 
     const updatedSettings = await prisma.programSettings.update({
@@ -133,9 +180,16 @@ export async function PUT(request: NextRequest) {
       payload: sanitizedData
     });
 
-    // Clear cache
-    revalidateTag('platform-settings', 'default');
-    revalidateTag('program-settings', 'default');
+    // Clear cache. revalidateTag must run inside a Next.js request context
+    // (it reads the static-generation store from AsyncLocalStorage). When
+    // invoked from a test or background job, it throws — so we guard with
+    // try/catch and let the save succeed regardless.
+    try {
+      revalidateTag('platform-settings', 'default');
+      revalidateTag('program-settings', 'default');
+    } catch (err) {
+      console.warn('revalidateTag skipped (out of Next request context?):', err);
+    }
 
     return NextResponse.json({
       success: true,
@@ -172,7 +226,7 @@ export async function POST(request: NextRequest) {
 
     if (action === 'create') {
       // Create new commission rule
-      const { name, type, value, conditions, isDefault } = ruleData;
+      const { name, type, value, conditions, isDefault, level } = ruleData;
 
       if (!name || !type || value === undefined) {
         return NextResponse.json(
@@ -181,10 +235,12 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // If setting as default, unset other defaults
+      const ruleLevel = typeof level === 'number' && level >= 1 ? Math.floor(level) : 1;
+
+      // If setting as default, unset other defaults at the same level
       if (isDefault) {
         await prisma.commissionRule.updateMany({
-          where: { isDefault: true },
+          where: { isDefault: true, level: ruleLevel },
           data: { isDefault: false }
         });
       }
@@ -194,6 +250,7 @@ export async function POST(request: NextRequest) {
           name,
           type,
           value,
+          level: ruleLevel,
           conditions: conditions || {},
           isDefault: isDefault || false,
           isActive: true
@@ -210,7 +267,7 @@ export async function POST(request: NextRequest) {
       });
 
       // Clear cache
-      revalidateTag('program-settings', 'default');
+      try { revalidateTag('program-settings', 'default'); } catch { /* not in request context */ }
 
       return NextResponse.json({
         success: true,
@@ -247,7 +304,7 @@ export async function POST(request: NextRequest) {
       });
 
       // Clear cache
-      revalidateTag('program-settings', 'default');
+      try { revalidateTag('program-settings', 'default'); } catch { /* not in request context */ }
 
       return NextResponse.json({
         success: true,
@@ -272,7 +329,7 @@ export async function POST(request: NextRequest) {
       });
 
       // Clear cache
-      revalidateTag('program-settings', 'default');
+      try { revalidateTag('program-settings', 'default'); } catch { /* not in request context */ }
 
       return NextResponse.json({
         success: true,

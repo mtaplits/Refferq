@@ -39,7 +39,9 @@ export async function GET(
   try {
     const { code } = await params;
     const referralCode = code;
-    const searchParams = request.nextUrl.searchParams;
+    // Use the standard URL API rather than `request.nextUrl` so the route
+    // also works when invoked from a plain Request (e.g. integration tests).
+    const searchParams = new URL(request.url).searchParams;
     const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://app.refferq.com';
 
     // Support both 'target' and 'dest' (Plan called it 'dest')
@@ -82,31 +84,31 @@ export async function GET(
       affiliateId: affiliate.id,
     });
 
-    // Generate attribution key
+    // Generate attribution key for this click
     const attributionKey = `attr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-    // Find or create a referral record for click tracking
+    // Reuse a single "click-bucket" Referral per affiliate (deterministic
+    // email so find-or-create matches existing rows). Previously this
+    // created one Referral row per click, polluting the table linearly
+    // with traffic. ReferralClick still gets one row per click — that's
+    // the right granularity for click data.
+    const clickBucketEmail = `__clicks__@${affiliate.referralCode}.tracking.internal`;
     let referral = await prisma.referral.findFirst({
-      where: {
-        affiliateId: affiliate.id,
-        leadEmail: `click-${attributionKey}@tracking.internal`,
-      }
+      where: { affiliateId: affiliate.id, leadEmail: clickBucketEmail },
     });
 
     if (!referral) {
       referral = await prisma.referral.create({
         data: {
           affiliateId: affiliate.id,
-          leadName: 'Click Visitor',
-          leadEmail: `click-${attributionKey}@tracking.internal`,
+          leadName: 'Click Bucket',
+          leadEmail: clickBucketEmail,
           status: 'PENDING',
           metadata: {
-            source: 'referral_link',
-            attribution_key: attributionKey,
-            target_url: targetUrl,
-            params: Object.fromEntries(searchParams.entries()),
-          }
-        }
+            source: 'referral_link_click_bucket',
+            note: 'Synthetic referral that owns all anonymous clicks for this affiliate. Real referrals are created when a customer email is captured.',
+          },
+        },
       });
     }
 

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { formatCurrency as formatCurrencyLib } from '@/lib/currency';
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from '@/components/ui/card';
@@ -118,8 +119,10 @@ export default function InvoicesPage() {
     }
   };
 
-  const formatCurrency = (cents: number) =>
-    `\u20B9${(cents / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  // Per-row currency: invoices each carry their own currency field. We
+  // accept the row in calls below and delegate to the centralized formatter.
+  const formatCurrency = (cents: number, currency = 'INR') =>
+    formatCurrencyLib(cents, currency);
 
   const formatDate = (d: string) => new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 
@@ -233,9 +236,9 @@ export default function InvoicesPage() {
                   <TableRow key={inv.id}>
                     <TableCell className="font-mono text-sm font-medium">{inv.invoiceNumber}</TableCell>
                     <TableCell className="text-muted-foreground text-sm">{inv.affiliateId.slice(0, 8)}...</TableCell>
-                    <TableCell>{formatCurrency(inv.amountCents)}</TableCell>
-                    <TableCell className="text-muted-foreground">{formatCurrency(inv.taxCents)}</TableCell>
-                    <TableCell className="font-semibold">{formatCurrency(inv.totalCents)}</TableCell>
+                    <TableCell>{formatCurrency(inv.amountCents, inv.currency)}</TableCell>
+                    <TableCell className="text-muted-foreground">{formatCurrency(inv.taxCents, inv.currency)}</TableCell>
+                    <TableCell className="font-semibold">{formatCurrency(inv.totalCents, inv.currency)}</TableCell>
                     <TableCell>{getStatusBadge(inv.status)}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{inv.issuedAt ? formatDate(inv.issuedAt) : '—'}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{inv.dueAt ? formatDate(inv.dueAt) : '—'}</TableCell>
@@ -324,15 +327,15 @@ export default function InvoicesPage() {
                 </div>
                 <div>
                   <p className="text-muted-foreground">Amount</p>
-                  <p className="font-semibold mt-1">{formatCurrency(viewInvoice.amountCents)}</p>
+                  <p className="font-semibold mt-1">{formatCurrency(viewInvoice.amountCents, viewInvoice.currency)}</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Tax</p>
-                  <p className="mt-1">{formatCurrency(viewInvoice.taxCents)}</p>
+                  <p className="mt-1">{formatCurrency(viewInvoice.taxCents, viewInvoice.currency)}</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Total</p>
-                  <p className="font-bold text-lg mt-1">{formatCurrency(viewInvoice.totalCents)}</p>
+                  <p className="font-bold text-lg mt-1">{formatCurrency(viewInvoice.totalCents, viewInvoice.currency)}</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Due Date</p>

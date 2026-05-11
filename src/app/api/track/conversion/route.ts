@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { isValidCurrencyForTreasury } from '@/lib/currency-allowlist';
 
 /**
  * POST /api/track/conversion - Track conversions/sales
@@ -79,6 +80,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Validate the conversion currency matches the program's treasury class
+    // — a CRYPTO program should not record a USD conversion and vice versa.
+    const programSettings = await prisma.programSettings.findFirst();
+    const treasuryType = (programSettings?.treasuryType ?? 'FIAT') as 'FIAT' | 'CRYPTO';
+    const effectiveCurrency = currency || programSettings?.currency || 'USD';
+    if (!isValidCurrencyForTreasury(effectiveCurrency, treasuryType)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Currency ${effectiveCurrency} does not match program treasury type ${treasuryType}`,
+        },
+        { status: 400 }
+      );
+    }
+
     // Check if referral with this email already exists
     let referral;
     if (customerEmail) {
@@ -124,7 +140,7 @@ export async function POST(req: NextRequest) {
         referralId: referral?.id || null,
         eventType: 'PURCHASE',
         amountCents,
-        currency: currency || 'USD',
+        currency: effectiveCurrency,
         status: 'PENDING',
         eventMetadata: {
           orderId: orderId || null,

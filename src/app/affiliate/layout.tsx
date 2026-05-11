@@ -39,6 +39,7 @@ import {
   LogOut,
   ChevronsUpDown,
   Bell,
+  Gift,
 } from 'lucide-react';
 
 interface BrandSettings {
@@ -53,6 +54,7 @@ const mainNavItems = [
   { title: 'Dashboard', url: '/affiliate', icon: LayoutDashboard },
   { title: 'Referrals', url: '/affiliate/referrals', icon: Users },
   { title: 'Payouts', url: '/affiliate/payouts', icon: Wallet },
+  { title: 'Credits', url: '/affiliate/credits', icon: Gift },
   { title: 'Resources', url: '/affiliate/resources', icon: BookOpen },
   { title: 'Reports', url: '/affiliate/reports', icon: BarChart3, badge: 'BETA' },
 ];

@@ -34,7 +34,13 @@ import {
   Key,
   Copy,
   Check,
+  Coins,
 } from 'lucide-react';
+
+type TreasuryType = 'FIAT' | 'CRYPTO';
+
+const EVM_ADDR_RE = /^0x[a-fA-F0-9]{40}$/;
+const TRON_ADDR_RE = /^T[a-zA-Z0-9]{33}$/;
 
 export default function SettingsPage() {
   const { user, loading: authLoading } = useAuth();
@@ -43,6 +49,7 @@ export default function SettingsPage() {
   const [copied, setCopied] = useState(false);
   const [referralCode, setReferralCode] = useState('');
   const [saving, setSaving] = useState(false);
+  const [treasuryType, setTreasuryType] = useState<TreasuryType>('FIAT');
 
   const [settingsForm, setSettingsForm] = useState({
     name: '',
@@ -51,6 +58,7 @@ export default function SettingsPage() {
     country: 'India',
     paymentMethod: 'PayPal',
     paymentEmail: '',
+    walletAddress: '',
   });
 
   useEffect(() => {
@@ -64,14 +72,17 @@ export default function SettingsPage() {
       const data = await res.json();
       if (data.success) {
         const pd = data.affiliate?.payoutDetails || {};
+        const programTreasury: TreasuryType = (data.program?.treasuryType as TreasuryType) ?? 'FIAT';
+        setTreasuryType(programTreasury);
         setReferralCode(data.affiliate?.referralCode || '');
         setSettingsForm({
           name: data.user?.name || user?.name || '',
           company: pd.company || '',
           email: data.user?.email || user?.email || '',
           country: pd.country || 'India',
-          paymentMethod: pd.paymentMethod || 'PayPal',
+          paymentMethod: pd.paymentMethod || (programTreasury === 'CRYPTO' ? 'USDT_ONCHAIN' : 'PayPal'),
           paymentEmail: pd.paymentEmail || data.user?.email || '',
+          walletAddress: pd.walletAddress || '',
         });
       }
     } catch (error) {
@@ -80,6 +91,12 @@ export default function SettingsPage() {
       setLoading(false);
     }
   };
+
+  const walletInvalid =
+    treasuryType === 'CRYPTO' &&
+    settingsForm.walletAddress.length > 0 &&
+    !EVM_ADDR_RE.test(settingsForm.walletAddress) &&
+    !TRON_ADDR_RE.test(settingsForm.walletAddress);
 
   const handleSave = async () => {
     setSaving(true);
@@ -249,46 +266,87 @@ export default function SettingsPage() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
-            <CreditCard className="h-4 w-4" />
+            {treasuryType === 'CRYPTO' ? <Coins className="h-4 w-4" /> : <CreditCard className="h-4 w-4" />}
             Payment Details
           </CardTitle>
-          <CardDescription>Configure how you receive payouts</CardDescription>
+          <CardDescription>
+            {treasuryType === 'CRYPTO'
+              ? 'Your USDT wallet address — payouts are sent on-chain.'
+              : 'Configure how you receive payouts.'}
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <Label>Payment Method</Label>
-              <Select
-                value={settingsForm.paymentMethod}
-                onValueChange={(v) => setSettingsForm({ ...settingsForm, paymentMethod: v })}
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="PayPal">PayPal</SelectItem>
-                  <SelectItem value="Bank Transfer">Bank Transfer</SelectItem>
-                  <SelectItem value="Stripe">Stripe</SelectItem>
-                  <SelectItem value="Wise">Wise</SelectItem>
-                  <SelectItem value="Wire Transfer">Wire Transfer</SelectItem>
-                  <SelectItem value="UPI">UPI</SelectItem>
-                </SelectContent>
-              </Select>
+          {treasuryType === 'CRYPTO' ? (
+            <div className="grid grid-cols-1 gap-4">
+              <div className="space-y-2">
+                <Label>Payment Method</Label>
+                <Select
+                  value={settingsForm.paymentMethod}
+                  onValueChange={(v) => setSettingsForm({ ...settingsForm, paymentMethod: v })}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="USDT_ONCHAIN">USDT (on-chain)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Wallet Address</Label>
+                <Input
+                  value={settingsForm.walletAddress}
+                  onChange={(e) => setSettingsForm({ ...settingsForm, walletAddress: e.target.value })}
+                  placeholder="0x... (EVM) or T... (Tron)"
+                  className={walletInvalid ? 'border-destructive' : ''}
+                />
+                {walletInvalid ? (
+                  <p className="text-xs text-destructive">
+                    Address format not recognized. Expected an EVM (0x + 40 hex chars) or Tron (T + 33 alphanumeric) address.
+                  </p>
+                ) : (
+                  <p className="text-[10px] text-muted-foreground">
+                    The chain is determined by the program operator (configured in <code>SHKEEPER_USDT_NETWORK</code>). Use the wallet that matches that chain.
+                  </p>
+                )}
+              </div>
             </div>
-            <div className="space-y-2">
-              <Label>Payment Email / Account</Label>
-              <Input
-                value={settingsForm.paymentEmail}
-                onChange={(e) => setSettingsForm({ ...settingsForm, paymentEmail: e.target.value })}
-                placeholder="payment@example.com"
-              />
+          ) : (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Payment Method</Label>
+                <Select
+                  value={settingsForm.paymentMethod}
+                  onValueChange={(v) => setSettingsForm({ ...settingsForm, paymentMethod: v })}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="PayPal">PayPal</SelectItem>
+                    <SelectItem value="Bank Transfer">Bank Transfer</SelectItem>
+                    <SelectItem value="Stripe">Stripe</SelectItem>
+                    <SelectItem value="Wise">Wise</SelectItem>
+                    <SelectItem value="Wire Transfer">Wire Transfer</SelectItem>
+                    <SelectItem value="UPI">UPI</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Payment Email / Account</Label>
+                <Input
+                  value={settingsForm.paymentEmail}
+                  onChange={(e) => setSettingsForm({ ...settingsForm, paymentEmail: e.target.value })}
+                  placeholder="payment@example.com"
+                />
+              </div>
             </div>
-          </div>
+          )}
 
           <Separator />
 
           <Alert>
             <Shield className="h-4 w-4" />
             <AlertDescription>
-              Your payment information is encrypted and stored securely. We will never share your details with third parties.
+              {treasuryType === 'CRYPTO'
+                ? 'Triple-check your wallet address. On-chain transfers cannot be reversed.'
+                : 'Your payment information is encrypted and stored securely. We will never share your details with third parties.'}
             </AlertDescription>
           </Alert>
         </CardContent>
@@ -296,7 +354,11 @@ export default function SettingsPage() {
 
       {/* Save Button */}
       <div className="flex justify-end">
-        <Button onClick={handleSave} disabled={saving} className="min-w-[120px]">
+        <Button
+          onClick={handleSave}
+          disabled={saving || walletInvalid}
+          className="min-w-[120px]"
+        >
           {saving ? 'Saving...' : 'Save Changes'}
         </Button>
       </div>

@@ -345,7 +345,8 @@ export class DatabaseService {
     });
   }
 
-  // Audit log operations
+  // Audit log operations — delegates to logAuditAction so system actors get
+  // the same lazy-upsert treatment that direct callers do.
   async createAuditLog(logData: {
     actorId: string;
     action: string;
@@ -353,15 +354,8 @@ export class DatabaseService {
     objectId: string;
     payload?: any;
   }) {
-    return await prisma.auditLog.create({
-      data: {
-        actorId: logData.actorId,
-        action: logData.action,
-        objectType: logData.objectType,
-        objectId: logData.objectId,
-        payload: logData.payload || {},
-      },
-    });
+    const { logAuditAction } = await import('./audit');
+    return logAuditAction(logData);
   }
 
   // Settings operations

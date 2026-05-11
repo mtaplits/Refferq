@@ -96,9 +96,21 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    // Get currency symbol
+    // Get currency symbol and program treasury info (Feature A/B)
     const { getCurrencySymbol } = await import('@/lib/currency');
     const currencySymbol = await getCurrencySymbol();
+    const programSettings = await prisma.programSettings.findFirst({
+      select: {
+        currency: true,
+        treasuryType: true,
+        trustEnabled: true,
+      },
+    });
+
+    // Per-affiliate trust score (Feature E)
+    const trust = await prisma.trustScore.findUnique({
+      where: { affiliateId: affiliate.id },
+    });
 
     return NextResponse.json({
       success: true,
@@ -114,6 +126,19 @@ export async function GET(request: NextRequest) {
       conversions,
       commissions,
       currencySymbol,
+      program: {
+        currency: programSettings?.currency ?? 'USD',
+        treasuryType: programSettings?.treasuryType ?? 'FIAT',
+        trustEnabled: programSettings?.trustEnabled ?? true,
+      },
+      trust: trust
+        ? {
+            score: trust.score,
+            tier: trust.tier,
+            lastComputedAt: trust.lastComputedAt,
+            attestationUid: trust.attestationUid,
+          }
+        : null,
     });
   } catch (error) {
     console.error('Affiliate profile API error:', error);
@@ -151,7 +176,7 @@ export async function PUT(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { name, company, email, country, paymentMethod, paymentEmail } = body;
+    const { name, company, email, country, paymentMethod, paymentEmail, walletAddress } = body;
 
     // Update user name and email if provided
     const userUpdateData: any = {};
@@ -179,19 +204,30 @@ export async function PUT(request: NextRequest) {
       });
     }
 
-    // Update affiliate payout details if provided
+    // Update affiliate payout details if provided. Merge with existing
+    // payoutDetails so that crypto fields don't get clobbered by a fiat
+    // save (or vice versa).
     if (user.affiliate) {
-      const payoutDetails: any = {};
+      const existing = (user.affiliate.payoutDetails as Record<string, unknown> | null) ?? {};
+      const payoutDetails: Record<string, unknown> = { ...existing };
 
-      if (company) payoutDetails.company = company.trim();
-      if (country) payoutDetails.country = country;
-      if (paymentMethod) payoutDetails.paymentMethod = paymentMethod;
-      if (paymentEmail) payoutDetails.paymentEmail = paymentEmail.trim();
+      if (company !== undefined) payoutDetails.company = typeof company === 'string' ? company.trim() : company;
+      if (country !== undefined) payoutDetails.country = country;
+      if (paymentMethod !== undefined) payoutDetails.paymentMethod = paymentMethod;
+      if (paymentEmail !== undefined) payoutDetails.paymentEmail = typeof paymentEmail === 'string' ? paymentEmail.trim() : paymentEmail;
+      if (walletAddress !== undefined) {
+        const trimmed = typeof walletAddress === 'string' ? walletAddress.trim() : '';
+        if (trimmed === '') {
+          delete payoutDetails.walletAddress;
+        } else {
+          payoutDetails.walletAddress = trimmed;
+        }
+      }
 
       await prisma.affiliate.update({
         where: { id: user.affiliate.id },
         data: {
-          payoutDetails: payoutDetails
+          payoutDetails: payoutDetails as object,
         }
       });
     }
