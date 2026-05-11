@@ -304,7 +304,7 @@ export default function SettingsPage() {
                   </p>
                 ) : (
                   <p className="text-[10px] text-muted-foreground">
-                    The chain is determined by the program operator (configured in <code>SHKEEPER_USDT_NETWORK</code>). Use the wallet that matches that chain.
+                    The chain is determined by the program operator (configured in <code>NOWPAYMENTS_USDT_NETWORK</code>). Use the wallet that matches that chain.
                   </p>
                 )}
               </div>

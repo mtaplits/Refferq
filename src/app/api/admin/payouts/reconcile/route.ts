@@ -6,9 +6,9 @@ import { getProvider } from '@/lib/crypto-disbursement';
 /**
  * Fallback reconcile cron for crypto payouts.
  *
- * Callbacks from the crypto provider (SHKeeper) normally drive
- * /api/webhook/payout-status, but networks or providers can drop them.
- * This endpoint queries each payout that's been stuck in queued/broadcast
+ * Callbacks from the crypto provider normally drive the per-provider webhook
+ * route (e.g. /api/webhook/nowpayments), but networks or providers can drop
+ * them. This endpoint queries each payout that's been stuck in queued/broadcast
  * state for > MIN_AGE_MINUTES and asks the provider for the current status.
  *
  * Auth: x-cron-secret matching CRON_SECRET, or an admin user.
@@ -79,7 +79,7 @@ export async function POST(request: NextRequest) {
                     },
                 });
                 // Refund: unlink commissions and re-credit balance (mirror
-                // the payout-status webhook's failed-branch behavior so the
+                // the provider webhook's failed-branch behavior so the
                 // balance invariant stays correct regardless of which path
                 // resolves the failure).
                 await prisma.commission.updateMany({

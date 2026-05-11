@@ -135,27 +135,31 @@ model Commission {
 }
 
 model Payout {
-  id              String       @id @default(cuid())
-  affiliateId     String       @map("affiliate_id")
-  userId          String       @map("user_id")
-  amountCents     Int          @map("amount_cents")
-  commissionCount Int          @default(0) @map("commission_count")
-  method          String?
-  status          PayoutStatus @default(PENDING)
-  notes           String?
-  processedAt     DateTime?    @map("processed_at")
-  createdBy       String       @map("created_by")
-  providerTaskId  String?      @map("provider_task_id")
-  txHash          String?      @map("tx_hash")
-  txStatus        String?      @map("tx_status")
-  providerError   String?      @map("provider_error")
-  createdAt       DateTime     @default(now()) @map("created_at")
-  updatedAt       DateTime     @updatedAt @map("updated_at")
-  affiliate       Affiliate    @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
-  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  commissions     Commission[] @relation("PayoutCommissions")
+  id                  String       @id @default(cuid())
+  affiliateId         String       @map("affiliate_id")
+  userId              String       @map("user_id")
+  amountCents         Int          @map("amount_cents")
+  commissionCount     Int          @default(0) @map("commission_count")
+  method              String?
+  status              PayoutStatus @default(PENDING)
+  notes               String?
+  processedAt         DateTime?    @map("processed_at")
+  createdBy           String       @map("created_by")
+  providerTaskId      String?      @map("provider_task_id")
+  txHash              String?      @map("tx_hash")
+  txStatus            String?      @map("tx_status")
+  providerError       String?      @map("provider_error")
+  onChainVerified     Boolean?     @map("on_chain_verified")
+  onChainVerifiedAt   DateTime?    @map("on_chain_verified_at")
+  onChainCheckReason  String?      @map("on_chain_check_reason")
+  createdAt           DateTime     @default(now()) @map("created_at")
+  updatedAt           DateTime     @updatedAt @map("updated_at")
+  affiliate           Affiliate    @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  user                User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  commissions         Commission[] @relation("PayoutCommissions")
 
   @@index([providerTaskId])
+  @@index([status, onChainVerified])
   @@map("payouts")
 }
 

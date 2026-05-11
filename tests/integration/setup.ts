@@ -56,7 +56,7 @@ const TRUNCATE_SQL = `
 
 beforeEach(async () => {
     await prisma.$executeRawUnsafe(TRUNCATE_SQL);
-    // Several routes (conversion webhook, mature cron, payout-status callback)
+    // Several routes (conversion webhook, mature cron, NowPayments IPN callback)
     // write AuditLog entries with system-actor IDs. AuditLog.actorId has an
     // FK to users, so we ensure those system users exist for every test.
     await prisma.user.createMany({

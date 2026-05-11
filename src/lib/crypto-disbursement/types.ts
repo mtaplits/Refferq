@@ -23,7 +23,7 @@ export interface CryptoSendResult {
 export type CryptoStatus = 'pending' | 'confirmed' | 'failed';
 
 export interface CryptoDisbursementProvider {
-    /** Stable adapter identifier, e.g. 'shkeeper' or 'stub'. */
+    /** Stable adapter identifier, e.g. 'nowpayments' or 'stub'. */
     readonly id: string;
     /** Currency code this adapter operates in (currently only USDT). */
     readonly currency: 'USDT';

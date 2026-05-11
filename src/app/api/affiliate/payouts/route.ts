@@ -51,7 +51,10 @@ export async function GET(request: NextRequest) {
         status: p.status,
         method: p.method,
         createdAt: p.createdAt.toISOString(),
-        paidAt: p.processedAt?.toISOString() || null
+        paidAt: p.processedAt?.toISOString() || null,
+        txHash: p.txHash,
+        onChainVerified: p.onChainVerified,
+        onChainVerifiedAt: p.onChainVerifiedAt?.toISOString() || null
       }))
     });
   } catch (error) {

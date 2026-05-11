@@ -31,6 +31,10 @@ import {
   Download,
   AlertCircle,
   Loader2,
+  ExternalLink,
+  ShieldCheck,
+  ShieldAlert,
+  ShieldQuestion,
 } from 'lucide-react';
 
 interface Payout {
@@ -40,6 +44,20 @@ interface Payout {
   method: string;
   createdAt: string;
   paidAt?: string;
+  txHash?: string | null;
+  onChainVerified?: boolean | null;
+  onChainVerifiedAt?: string | null;
+}
+
+// Tron is the only chain supported by the v1 verifier; widen this when other
+// networks come online.
+function explorerUrlForTxHash(txHash: string): string {
+  return `https://tronscan.org/#/transaction/${txHash}`;
+}
+
+function shortenHash(hash: string): string {
+  if (hash.length <= 14) return hash;
+  return `${hash.slice(0, 8)}…${hash.slice(-6)}`;
 }
 
 export default function PayoutsPage() {
@@ -80,6 +98,38 @@ export default function PayoutsPage() {
   // Delegates to the centralized formatter so crypto currencies (USDT) get
   // suffix-style formatting ("10.00 USDT") while fiat uses the prefix symbol.
   const formatCurrency = (cents: number) => formatCurrencyLib(cents, currencySymbol);
+
+  const renderReceipt = (payout: Payout) => {
+    if (!payout.txHash) {
+      return <span className="text-xs text-muted-foreground">—</span>;
+    }
+    const url = explorerUrlForTxHash(payout.txHash);
+    let badgeProps: { variant: 'default' | 'secondary' | 'destructive' | 'outline'; icon: React.ElementType; label: string; className?: string };
+    if (payout.onChainVerified === true) {
+      badgeProps = { variant: 'default', icon: ShieldCheck, label: 'Verified on-chain', className: 'bg-emerald-600 hover:bg-emerald-700' };
+    } else if (payout.onChainVerified === false) {
+      badgeProps = { variant: 'outline', icon: ShieldAlert, label: 'Under review', className: 'border-amber-500 text-amber-700' };
+    } else {
+      badgeProps = { variant: 'secondary', icon: ShieldQuestion, label: 'Verifying' };
+    }
+    const { icon: Icon, label, className, variant } = badgeProps;
+    return (
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center gap-2 text-xs hover:underline"
+        title={payout.txHash}
+      >
+        <Badge variant={variant} className={`gap-1 text-xs ${className ?? ''}`}>
+          <Icon className="h-3 w-3" />
+          {label}
+        </Badge>
+        <span className="font-mono text-muted-foreground">{shortenHash(payout.txHash)}</span>
+        <ExternalLink className="h-3 w-3 text-muted-foreground" />
+      </a>
+    );
+  };
 
   const getStatusBadge = (status: string) => {
     const map: Record<string, { variant: 'default' | 'secondary' | 'destructive' | 'outline'; icon: React.ElementType }> = {
@@ -236,6 +286,7 @@ export default function PayoutsPage() {
                   <TableHead>Date</TableHead>
                   <TableHead>Method</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Receipt</TableHead>
                   <TableHead className="text-right">Amount</TableHead>
                 </TableRow>
               </TableHeader>
@@ -245,6 +296,7 @@ export default function PayoutsPage() {
                     <TableCell className="text-sm">{formatDate(payout.paidAt || payout.createdAt)}</TableCell>
                     <TableCell className="text-muted-foreground">{payout.method || 'N/A'}</TableCell>
                     <TableCell>{getStatusBadge(payout.status)}</TableCell>
+                    <TableCell>{renderReceipt(payout)}</TableCell>
                     <TableCell className="text-right font-semibold">{formatCurrency(payout.amount)}</TableCell>
                   </TableRow>
                 ))}
