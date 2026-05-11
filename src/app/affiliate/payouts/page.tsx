@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/hooks/useAuth';
+import { formatCurrency as formatCurrencyLib } from '@/lib/currency';
 import {
   Card,
   CardContent,
@@ -76,8 +77,9 @@ export default function PayoutsPage() {
   const formatDate = (date: string) =>
     new Date(date).toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric' });
 
-  const formatCurrency = (cents: number) =>
-    `${currencySymbol}${(cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  // Delegates to the centralized formatter so crypto currencies (USDT) get
+  // suffix-style formatting ("10.00 USDT") while fiat uses the prefix symbol.
+  const formatCurrency = (cents: number) => formatCurrencyLib(cents, currencySymbol);
 
   const getStatusBadge = (status: string) => {
     const map: Record<string, { variant: 'default' | 'secondary' | 'destructive' | 'outline'; icon: React.ElementType }> = {

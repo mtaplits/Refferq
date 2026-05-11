@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
     if (referralId) where.referralId = referralId;
     if (affiliateId) where.affiliateId = affiliateId;
 
-    const transactions = await (prisma as any).transaction.findMany({
+    const transactions = await prisma.transaction.findMany({
       where,
       include: {
         referral: true,
@@ -171,7 +171,7 @@ export async function POST(request: NextRequest) {
     const commissionCents = Math.floor(amountCents * commissionRate);
 
     // Create transaction
-    const transaction = await (prisma as any).transaction.create({
+    const transaction = await prisma.transaction.create({
       data: {
         referralId,
         affiliateId: referral.affiliateId,
@@ -284,7 +284,7 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    const transaction = await (prisma as any).transaction.update({
+    const transaction = await prisma.transaction.update({
       where: { id },
       data: {
         ...(status && { status }),
@@ -343,7 +343,7 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    await (prisma as any).transaction.delete({
+    await prisma.transaction.delete({
       where: { id }
     });
 

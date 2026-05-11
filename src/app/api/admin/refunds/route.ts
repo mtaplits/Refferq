@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Get transaction
-    const transaction = await (prisma as any).transaction.findUnique({
+    const transaction = await prisma.transaction.findUnique({
       where: { id: transactionId },
       include: { affiliate: true },
     });
@@ -59,7 +59,7 @@ export async function POST(request: NextRequest) {
     };
 
     // 1. Mark transaction as REFUNDED
-    await (prisma as any).transaction.update({
+    await prisma.transaction.update({
       where: { id: transactionId },
       data: {
         status: 'REFUNDED',
@@ -132,7 +132,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const transactions = await (prisma as any).transaction.findMany({
+    const transactions = await prisma.transaction.findMany({
       where: { status: 'REFUNDED' },
       include: { affiliate: { include: { user: { select: { name: true, email: true } } } } },
       orderBy: { updatedAt: 'desc' },

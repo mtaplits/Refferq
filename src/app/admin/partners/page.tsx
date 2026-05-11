@@ -79,6 +79,10 @@ interface Partner {
   revenue: number;
   earnings: number;
   groupName?: string;
+  referredByCode: string | null;
+  referredByName: string | null;
+  downlineCount: number;
+  trustTier: 'NEW' | 'BUILDING' | 'TRUSTED' | 'ELITE' | null;
 }
 
 export default function PartnersPage() {
@@ -143,6 +147,10 @@ export default function PartnersPage() {
           revenue: 0,
           earnings: aff.balanceCents || 0,
           groupName: '',
+          referredByCode: aff.referredBy?.referralCode ?? null,
+          referredByName: aff.referredBy?.user?.name ?? null,
+          downlineCount: aff._count?.downline ?? 0,
+          trustTier: aff.trustScore?.tier ?? null,
         }));
         setPartners(formattedPartners);
         setCurrencySymbol(data.currencySymbol || '₹');
@@ -473,6 +481,9 @@ export default function PartnersPage() {
                     </div>
                   </TableHead>
                   <TableHead>Referral Code</TableHead>
+                  <TableHead>Referred By</TableHead>
+                  <TableHead>Downline</TableHead>
+                  <TableHead>Tier</TableHead>
                   <TableHead className="cursor-pointer" onClick={() => handleSort('leads')}>
                     <div className="flex items-center">
                       Leads <SortIcon field="leads" />
@@ -530,6 +541,32 @@ export default function PartnersPage() {
                       <TableCell>
                         <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{partner.referralCode}</code>
                       </TableCell>
+                      <TableCell>
+                        {partner.referredByCode ? (
+                          <div className="text-xs">
+                            <code className="bg-muted px-1.5 py-0.5 rounded">{partner.referredByCode}</code>
+                            {partner.referredByName && (
+                              <div className="text-muted-foreground">{partner.referredByName}</div>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {partner.downlineCount > 0 ? (
+                          <span className="text-sm font-medium">{partner.downlineCount}</span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {partner.trustTier ? (
+                          <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{partner.trustTier}</code>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
                       <TableCell>{partner.leads}</TableCell>
                       <TableCell>{partner.customers}</TableCell>
                       <TableCell className="text-right font-medium">
@@ -549,7 +586,7 @@ export default function PartnersPage() {
                   ))
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={8}>
+                    <TableCell colSpan={11}>
                       <div className="flex flex-col items-center justify-center py-12 text-center">
                         <Users className="h-10 w-10 text-muted-foreground/50 mb-3" />
                         <p className="text-sm font-medium text-muted-foreground">No partners found</p>

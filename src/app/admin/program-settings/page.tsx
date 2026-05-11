@@ -60,7 +60,16 @@ import {
   ExternalLink,
   Zap,
   Clock,
+  Banknote,
+  Coins,
+  Network,
+  Award,
 } from 'lucide-react';
+import {
+  FIAT_CURRENCIES,
+  CRYPTO_CURRENCIES,
+  type TreasuryType,
+} from '@/lib/currency-allowlist';
 
 interface ProgramSettings {
   id: string;
@@ -73,6 +82,19 @@ interface ProgramSettings {
   minimumPayoutThreshold: number;
   payoutTerm: string;
   commissionHoldDays: number;
+  treasuryType: TreasuryType;
+  mlmEnabled: boolean;
+  mlmMaxLevels: number;
+  mlmCommissionMode: string;
+  trustEnabled: boolean;
+  trustNewHoldPctOff: number;
+  trustBuildingHoldPctOff: number;
+  trustTrustedHoldPctOff: number;
+  trustEliteHoldPctOff: number;
+  trustNewCommissionBoost: number;
+  trustBuildingCommissionBoost: number;
+  trustTrustedCommissionBoost: number;
+  trustEliteCommissionBoost: number;
   commissionRules: CommissionRule[];
 }
 
@@ -81,11 +103,23 @@ interface CommissionRule {
   name: string;
   type: string;
   value: number;
+  level: number;
   conditions: Record<string, unknown>;
   isDefault: boolean;
   isActive: boolean;
   createdAt: string;
 }
+
+const CURRENCY_LABELS: Record<string, string> = {
+  USD: 'USD ($)',
+  INR: 'INR (₹)',
+  EUR: 'EUR (€)',
+  GBP: 'GBP (£)',
+  CAD: 'CAD (CA$)',
+  AUD: 'AUD (A$)',
+  BGN: 'BGN (лв.)',
+  USDT: 'USDT (Tether)',
+};
 
 export default function ProgramSettingsPage() {
   const [settings, setSettings] = useState<ProgramSettings | null>(null);
@@ -100,8 +134,10 @@ export default function ProgramSettingsPage() {
     name: '',
     type: 'PERCENTAGE',
     value: '',
+    level: 1,
     isDefault: false,
   });
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [savingRule, setSavingRule] = useState(false);
   const [copiedSnippet, setCopiedSnippet] = useState<string | null>(null);
 
@@ -135,6 +171,7 @@ export default function ProgramSettingsPage() {
     if (!settings) return;
     setSaving(true);
     setSaved(false);
+    setSaveError(null);
     try {
       const res = await fetch('/api/admin/settings', {
         method: 'PUT',
@@ -148,26 +185,58 @@ export default function ProgramSettingsPage() {
           minimumPayoutThreshold: settings.minimumPayoutThreshold,
           payoutTerm: settings.payoutTerm,
           commissionHoldDays: settings.commissionHoldDays,
+          treasuryType: settings.treasuryType,
+          mlmEnabled: settings.mlmEnabled,
+          mlmMaxLevels: settings.mlmMaxLevels,
+          mlmCommissionMode: settings.mlmCommissionMode,
+          trustEnabled: settings.trustEnabled,
+          trustNewHoldPctOff: settings.trustNewHoldPctOff,
+          trustBuildingHoldPctOff: settings.trustBuildingHoldPctOff,
+          trustTrustedHoldPctOff: settings.trustTrustedHoldPctOff,
+          trustEliteHoldPctOff: settings.trustEliteHoldPctOff,
+          trustNewCommissionBoost: settings.trustNewCommissionBoost,
+          trustBuildingCommissionBoost: settings.trustBuildingCommissionBoost,
+          trustTrustedCommissionBoost: settings.trustTrustedCommissionBoost,
+          trustEliteCommissionBoost: settings.trustEliteCommissionBoost,
         }),
       });
       if (res.ok) {
         setSaved(true);
         setTimeout(() => setSaved(false), 3000);
+      } else {
+        const errBody = await res.json().catch(() => ({}));
+        setSaveError(errBody.error || `Save failed (${res.status})`);
       }
     } catch (error) {
       console.error('Failed to save settings:', error);
+      setSaveError(error instanceof Error ? error.message : 'Save failed');
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleTreasuryChange = (next: TreasuryType) => {
+    if (!settings) return;
+    const allowed = next === 'FIAT' ? FIAT_CURRENCIES : CRYPTO_CURRENCIES;
+    // If current currency is invalid for the new treasury type, pick the first allowed.
+    const nextCurrency = (allowed as readonly string[]).includes(settings.currency)
+      ? settings.currency
+      : allowed[0];
+    setSettings({ ...settings, treasuryType: next, currency: nextCurrency });
   };
 
   const handleSaveRule = async () => {
     setSavingRule(true);
     try {
       const action = editingRule ? 'update' : 'create';
-      const ruleData = editingRule
-        ? { id: editingRule.id, name: ruleForm.name, type: ruleForm.type, value: parseFloat(ruleForm.value), isDefault: ruleForm.isDefault }
-        : { name: ruleForm.name, type: ruleForm.type, value: parseFloat(ruleForm.value), isDefault: ruleForm.isDefault };
+      const base = {
+        name: ruleForm.name,
+        type: ruleForm.type,
+        value: parseFloat(ruleForm.value),
+        level: ruleForm.level,
+        isDefault: ruleForm.isDefault,
+      };
+      const ruleData = editingRule ? { id: editingRule.id, ...base } : base;
 
       const res = await fetch('/api/admin/settings', {
         method: 'POST',
@@ -178,7 +247,7 @@ export default function ProgramSettingsPage() {
         await fetchSettings();
         setRuleDialog(false);
         setEditingRule(null);
-        setRuleForm({ name: '', type: 'PERCENTAGE', value: '', isDefault: false });
+        setRuleForm({ name: '', type: 'PERCENTAGE', value: '', level: 1, isDefault: false });
       }
     } catch (error) {
       console.error('Failed to save rule:', error);
@@ -203,7 +272,7 @@ export default function ProgramSettingsPage() {
 
   const openCreateRule = () => {
     setEditingRule(null);
-    setRuleForm({ name: '', type: 'PERCENTAGE', value: '', isDefault: false });
+    setRuleForm({ name: '', type: 'PERCENTAGE', value: '', level: 1, isDefault: false });
     setRuleDialog(true);
   };
 
@@ -213,6 +282,7 @@ export default function ProgramSettingsPage() {
       name: rule.name,
       type: rule.type,
       value: String(rule.value),
+      level: rule.level ?? 1,
       isDefault: rule.isDefault,
     });
     setRuleDialog(true);
@@ -242,6 +312,12 @@ export default function ProgramSettingsPage() {
         <h1 className="text-2xl font-bold tracking-tight">Program Settings</h1>
         <p className="text-muted-foreground">Configure your affiliate program</p>
       </div>
+
+      {saveError && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+          {saveError}
+        </div>
+      )}
 
       {/* General Settings */}
       <Card>
@@ -311,6 +387,35 @@ export default function ProgramSettingsPage() {
             </div>
           </div>
           <Separator />
+          {/* Treasury Type (Feature A) */}
+          <div className="grid gap-2">
+            <Label>Treasury Type</Label>
+            <div className="grid gap-2 md:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => handleTreasuryChange('FIAT')}
+                className={`flex items-start gap-3 rounded-md border p-3 text-left transition ${settings.treasuryType === 'FIAT' ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'}`}
+              >
+                <Banknote className="mt-0.5 h-5 w-5 text-muted-foreground" />
+                <div>
+                  <div className="font-medium">Fiat</div>
+                  <p className="text-xs text-muted-foreground">USD, INR, EUR, GBP, CAD, AUD, BGN. Pay via PayPal, bank transfer, Stripe, Wise, etc.</p>
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleTreasuryChange('CRYPTO')}
+                className={`flex items-start gap-3 rounded-md border p-3 text-left transition ${settings.treasuryType === 'CRYPTO' ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'}`}
+              >
+                <Coins className="mt-0.5 h-5 w-5 text-muted-foreground" />
+                <div>
+                  <div className="font-medium">Crypto</div>
+                  <p className="text-xs text-muted-foreground">USDT on-chain via your SHKeeper deployment. Configure SHKEEPER_* env vars to enable disbursement.</p>
+                </div>
+              </button>
+            </div>
+            <p className="text-[10px] text-muted-foreground">Treasury type locks once the program has conversion activity. Currencies and payout methods are partitioned — programs cannot mix fiat and crypto.</p>
+          </div>
           <div className="grid gap-4 md:grid-cols-3">
             <div className="grid gap-2">
               <Label htmlFor="currency">Currency</Label>
@@ -322,10 +427,9 @@ export default function ProgramSettingsPage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="INR">INR (₹)</SelectItem>
-                  <SelectItem value="USD">USD ($)</SelectItem>
-                  <SelectItem value="EUR">EUR (€)</SelectItem>
-                  <SelectItem value="GBP">GBP (£)</SelectItem>
+                  {(settings.treasuryType === 'CRYPTO' ? CRYPTO_CURRENCIES : FIAT_CURRENCIES).map((c) => (
+                    <SelectItem key={c} value={c}>{CURRENCY_LABELS[c] ?? c}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -381,6 +485,151 @@ export default function ProgramSettingsPage() {
             </p>
           </div>
         </CardContent>
+      </Card>
+
+      {/* Multi-Level Commissions (Feature D) */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <Network className="h-5 w-5" />
+                Multi-Level Commissions
+              </CardTitle>
+              <CardDescription>
+                Pay commissions to upline affiliates when a downline drives a conversion
+              </CardDescription>
+            </div>
+            <Switch
+              checked={settings.mlmEnabled}
+              onCheckedChange={(v) => setSettings({ ...settings, mlmEnabled: v })}
+            />
+          </div>
+        </CardHeader>
+        {settings.mlmEnabled && (
+          <CardContent className="grid gap-6">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-2">
+                <Label htmlFor="mlmMaxLevels">Max Levels Deep</Label>
+                <Input
+                  id="mlmMaxLevels"
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={settings.mlmMaxLevels}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      mlmMaxLevels: Math.max(1, Math.min(10, parseInt(e.target.value) || 1)),
+                    })
+                  }
+                />
+                <p className="text-[10px] text-muted-foreground">Cap on how far up the upline chain a commission propagates. 1 = direct only.</p>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="mlmCommissionMode">Commission Mode</Label>
+                <Select
+                  value={settings.mlmCommissionMode}
+                  onValueChange={(v) => setSettings({ ...settings, mlmCommissionMode: v })}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ADDITIVE">Additive — merchant pays more (each level has its own rate)</SelectItem>
+                    <SelectItem value="SPLIT_FROM_DIRECT">Split — uplines slice the direct rate (merchant cost unchanged)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[10px] text-muted-foreground">SPLIT mode enforces level-2+ rates sum &le; level-1 rate.</p>
+              </div>
+            </div>
+            <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900 dark:border-blue-900 dark:bg-blue-950 dark:text-blue-200">
+              Per-level rates are configured in <strong>Commission Rules</strong> below. Set the rule&apos;s <strong>Level</strong> to 1 for direct commissions, 2 for the first upline, etc.
+            </div>
+          </CardContent>
+        )}
+      </Card>
+
+      {/* Affiliate Trust Score (Feature E) */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <Award className="h-5 w-5" />
+                Trust Score
+              </CardTitle>
+              <CardDescription>
+                Tier-based hold reductions and rate boosts based on each affiliate&apos;s track record
+              </CardDescription>
+            </div>
+            <Switch
+              checked={settings.trustEnabled}
+              onCheckedChange={(v) => setSettings({ ...settings, trustEnabled: v })}
+            />
+          </div>
+        </CardHeader>
+        {settings.trustEnabled && (
+          <CardContent className="space-y-4">
+            <div className="rounded-md bg-muted p-3 text-xs text-muted-foreground">
+              Affiliates earn one of four tiers based on referrals, refund rate, earnings, and downline. Higher tiers get shorter holds and optional rate boosts. For <strong>CRYPTO</strong> programs, the score is also published as an off-chain EAS attestation when <code>EAS_*</code> env vars are set.
+            </div>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Tier</TableHead>
+                    <TableHead>Score range</TableHead>
+                    <TableHead>Hold reduction %</TableHead>
+                    <TableHead>Commission boost (pp)</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {([
+                    { key: 'New', range: '0-199', holdField: 'trustNewHoldPctOff', boostField: 'trustNewCommissionBoost' },
+                    { key: 'Building', range: '200-499', holdField: 'trustBuildingHoldPctOff', boostField: 'trustBuildingCommissionBoost' },
+                    { key: 'Trusted', range: '500-799', holdField: 'trustTrustedHoldPctOff', boostField: 'trustTrustedCommissionBoost' },
+                    { key: 'Elite', range: '800-1000', holdField: 'trustEliteHoldPctOff', boostField: 'trustEliteCommissionBoost' },
+                  ] as const).map((row) => (
+                    <TableRow key={row.key}>
+                      <TableCell className="font-medium">{row.key}</TableCell>
+                      <TableCell className="text-muted-foreground">{row.range}</TableCell>
+                      <TableCell>
+                        <Input
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={(settings as unknown as Record<string, number>)[row.holdField] ?? 0}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              [row.holdField]: Math.max(0, Math.min(100, parseInt(e.target.value) || 0)),
+                            })
+                          }
+                          className="max-w-[100px]"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Input
+                          type="number"
+                          min={-50}
+                          max={50}
+                          step={0.5}
+                          value={(settings as unknown as Record<string, number>)[row.boostField] ?? 0}
+                          onChange={(e) =>
+                            setSettings({
+                              ...settings,
+                              [row.boostField]: parseFloat(e.target.value) || 0,
+                            })
+                          }
+                          className="max-w-[100px]"
+                        />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        )}
       </Card>
 
       {/* Commission Rules */}
@@ -448,6 +697,24 @@ export default function ProgramSettingsPage() {
                       </div>
                     </div>
                   </div>
+                  {settings.mlmEnabled && (
+                    <div className="grid gap-2">
+                      <Label>Level (1 = direct, 2+ = upline)</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={settings.mlmMaxLevels}
+                        value={ruleForm.level}
+                        onChange={(e) =>
+                          setRuleForm({
+                            ...ruleForm,
+                            level: Math.max(1, Math.min(settings.mlmMaxLevels, parseInt(e.target.value) || 1)),
+                          })
+                        }
+                      />
+                      <p className="text-[10px] text-muted-foreground">Rule applies when a commission is being calculated for this position in the upline chain.</p>
+                    </div>
+                  )}
                   <div className="flex items-center gap-2">
                     <Switch
                       checked={ruleForm.isDefault}
@@ -478,6 +745,7 @@ export default function ProgramSettingsPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
+                  {settings.mlmEnabled && <TableHead>Level</TableHead>}
                   <TableHead>Type</TableHead>
                   <TableHead>Value</TableHead>
                   <TableHead>Default</TableHead>
@@ -489,11 +757,16 @@ export default function ProgramSettingsPage() {
                 {settings.commissionRules.map((rule) => (
                   <TableRow key={rule.id}>
                     <TableCell className="font-medium">{rule.name}</TableCell>
+                    {settings.mlmEnabled && (
+                      <TableCell>
+                        <Badge variant="outline">L{rule.level ?? 1}</Badge>
+                      </TableCell>
+                    )}
                     <TableCell>
                       <Badge variant="outline">{rule.type}</Badge>
                     </TableCell>
                     <TableCell>
-                      {rule.type === 'PERCENTAGE' ? `${rule.value}%` : `₹${rule.value}`}
+                      {rule.type === 'PERCENTAGE' ? `${rule.value}%` : `${rule.value}`}
                     </TableCell>
                     <TableCell>
                       {rule.isDefault && <Badge variant="default">Default</Badge>}

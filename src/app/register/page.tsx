@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import React, { Suspense, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -25,8 +25,21 @@ import { Target, User, Mail, ShieldCheck, ArrowLeft, Loader2, CheckCircle2 } fro
 
 type Step = 'details' | 'otp' | 'success';
 
+// Wrap the real page in a Suspense boundary because `useSearchParams()`
+// triggers Next.js's CSR-bailout in static builds. Next.js requires the
+// hook to live inside a Suspense child so the prerender can resolve.
 export default function RegisterPage() {
+  return (
+    <Suspense fallback={null}>
+      <RegisterPageInner />
+    </Suspense>
+  );
+}
+
+function RegisterPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const referrerCode = searchParams?.get('ref')?.trim() || '';
   const [step, setStep] = useState<Step>('details');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -45,7 +58,7 @@ export default function RegisterPage() {
       const registerRes = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, name, role: 'AFFILIATE' }),
+        body: JSON.stringify({ email, name, role: 'AFFILIATE', referrerCode: referrerCode || undefined }),
       });
 
       const registerData = await registerRes.json();
@@ -167,6 +180,11 @@ export default function RegisterPage() {
                 <CardDescription>
                   Join as an affiliate partner and start earning
                 </CardDescription>
+                {referrerCode && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Invited by code <span className="font-mono font-semibold text-foreground">{referrerCode}</span>
+                  </p>
+                )}
               </CardHeader>
               <form onSubmit={handleRegister}>
                 <CardContent className="space-y-4">

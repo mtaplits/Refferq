@@ -48,6 +48,8 @@ import {
   FileText,
   UsersRound,
   Layers,
+  Gift,
+  Award,
 } from 'lucide-react';
 
 const mainNavItems = [
@@ -55,6 +57,8 @@ const mainNavItems = [
   { title: 'Partners', url: '/admin/partners', icon: Users },
   { title: 'Customers', url: '/admin/customers', icon: UserCheck },
   { title: 'Payouts', url: '/admin/payouts', icon: Wallet },
+  { title: 'Credits', url: '/admin/credits', icon: Gift },
+  { title: 'Trust Scores', url: '/admin/trust', icon: Award },
   { title: 'Invoices', url: '/admin/invoices', icon: FileText },
   { title: 'Emails', url: '/admin/emails', icon: Mail },
 ];
