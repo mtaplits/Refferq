@@ -62,7 +62,14 @@ export async function GET(request: NextRequest) {
     success: true,
     message: 'Email test endpoint is working',
     config: {
-      apiKeyConfigured: !!process.env.RESEND_API_KEY,
+      transport: process.env.POSTMARK_SERVER_TOKEN
+        ? 'postmark'
+        : process.env.RESEND_API_KEY
+        ? 'resend'
+        : 'none',
+      postmarkFromAddress: process.env.POSTMARK_FROM_ADDRESS || null,
+      postmarkMessageStream: process.env.POSTMARK_MESSAGE_STREAM || null,
+      resendFromEmail: process.env.RESEND_FROM_EMAIL || null,
       environment: process.env.NODE_ENV,
     },
   });

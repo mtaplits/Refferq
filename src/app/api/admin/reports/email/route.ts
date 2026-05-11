@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { resend } from '@/lib/email';
+import { sendTransactionalEmail } from '@/lib/email';
 
 async function verifyAdmin(request: NextRequest) {
   try {
@@ -88,12 +88,11 @@ export async function POST(request: NextRequest) {
     </html>
     `;
 
-    // Send to all recipients
-    const fromEmail = process.env.RESEND_FROM_EMAIL || 'Refferq <noreply@refferq.com>';
+    // Send to all recipients (sendTransactionalEmail picks the from-address from
+    // POSTMARK_FROM_ADDRESS or RESEND_FROM_EMAIL based on the active transport).
     const results = await Promise.allSettled(
       recipients.map((email: string) =>
-        resend.emails.send({
-          from: fromEmail,
+        sendTransactionalEmail({
           to: email.trim(),
           subject: `[Refferq] ${reportData.type || 'Report'} — ${reportDate}`,
           html,

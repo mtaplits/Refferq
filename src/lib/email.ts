@@ -1,24 +1,97 @@
+import { ServerClient as PostmarkClient } from 'postmark';
 import { Resend } from 'resend';
 
-// Initialize Resend with API key only when needed (server-side)
-let resendInstance: Resend | null = null;
+// Provider-agnostic transactional email transport.
+//
+// Selection: POSTMARK_SERVER_TOKEN takes precedence; falls back to RESEND_API_KEY.
+// Throws on first send if neither is configured. Set exactly one for production.
 
-function getResendClient(): Resend {
-  if (!resendInstance) {
-    const apiKey = process.env.RESEND_API_KEY;
-    if (!apiKey) {
-      throw new Error('RESEND_API_KEY environment variable is not set');
-    }
-    resendInstance = new Resend(apiKey);
-  }
-  return resendInstance;
+export interface TransactionalEmail {
+  to: string;
+  subject: string;
+  html: string;
+  from?: string;
+  textBody?: string;
 }
 
-export const resend = {
-  get emails() {
-    return getResendClient().emails;
+interface EmailTransport {
+  name: 'postmark' | 'resend';
+  send(params: Required<Pick<TransactionalEmail, 'to' | 'subject' | 'html' | 'from'>> & Pick<TransactionalEmail, 'textBody'>): Promise<{ messageId: string }>;
+}
+
+let transportInstance: EmailTransport | null = null;
+
+function buildPostmarkTransport(token: string): EmailTransport {
+  const client = new PostmarkClient(token);
+  const messageStream = process.env.POSTMARK_MESSAGE_STREAM || 'outbound';
+  return {
+    name: 'postmark',
+    async send(params) {
+      const response = await client.sendEmail({
+        From: params.from,
+        To: params.to,
+        Subject: params.subject,
+        HtmlBody: params.html,
+        TextBody: params.textBody,
+        MessageStream: messageStream,
+      });
+      if (response.ErrorCode && response.ErrorCode !== 0) {
+        throw new Error(`Postmark send failed (${response.ErrorCode}): ${response.Message}`);
+      }
+      return { messageId: response.MessageID };
+    },
+  };
+}
+
+function buildResendTransport(apiKey: string): EmailTransport {
+  const client = new Resend(apiKey);
+  return {
+    name: 'resend',
+    async send(params) {
+      const response = await client.emails.send({
+        from: params.from,
+        to: params.to,
+        subject: params.subject,
+        html: params.html,
+        text: params.textBody,
+      });
+      if (response.error) {
+        const msg = response.error.message ?? JSON.stringify(response.error);
+        throw new Error(`Resend send failed: ${msg}`);
+      }
+      return { messageId: response.data?.id ?? '' };
+    },
+  };
+}
+
+export function getEmailTransport(): EmailTransport {
+  if (transportInstance) return transportInstance;
+  const postmarkToken = process.env.POSTMARK_SERVER_TOKEN;
+  const resendKey = process.env.RESEND_API_KEY;
+  if (postmarkToken) {
+    transportInstance = buildPostmarkTransport(postmarkToken);
+  } else if (resendKey) {
+    transportInstance = buildResendTransport(resendKey);
+  } else {
+    throw new Error('No email transport configured. Set POSTMARK_SERVER_TOKEN or RESEND_API_KEY.');
   }
-};
+  return transportInstance;
+}
+
+export async function sendTransactionalEmail(params: TransactionalEmail): Promise<{ messageId: string }> {
+  const transport = getEmailTransport();
+  const from = params.from
+    || process.env.POSTMARK_FROM_ADDRESS
+    || process.env.RESEND_FROM_EMAIL
+    || 'Refferq <noreply@refferq.com>';
+  return transport.send({
+    to: params.to,
+    subject: params.subject,
+    html: params.html,
+    from,
+    textBody: params.textBody,
+  });
+}
 
 export interface EmailTemplate {
   to: string;
@@ -83,7 +156,7 @@ export interface CommissionNotificationData {
 }
 
 class EmailService {
-  private defaultFrom = process.env.RESEND_FROM_EMAIL || 'Refferq <noreply@refferq.com>';
+  private defaultFrom = process.env.POSTMARK_FROM_ADDRESS || process.env.RESEND_FROM_EMAIL || 'Refferq <noreply@refferq.com>';
 
   /** Escape HTML special characters to prevent XSS in email templates */
   private escapeHtml(str: string): string {
@@ -129,16 +202,12 @@ class EmailService {
     html: string;
   }): Promise<{ success: boolean; message: string }> {
     try {
-      const { Resend } = await import('resend');
-      const resend = new Resend(process.env.RESEND_API_KEY);
-
-      const result = await resend.emails.send({
+      await sendTransactionalEmail({
         from: this.defaultFrom,
         to: params.to,
         subject: params.subject,
         html: params.html,
       });
-
       return { success: true, message: 'Email sent successfully' };
     } catch (error) {
       console.error('Email sending error:', error);
@@ -882,15 +951,12 @@ class EmailService {
 
   async sendCustomEmail(to: string, subject: string, html: string): Promise<{ success: boolean; message: string }> {
     try {
-      const { Resend } = await import('resend');
-      const resend = new Resend(process.env.RESEND_API_KEY);
-      const result = await resend.emails.send({
+      const result = await sendTransactionalEmail({
         from: this.defaultFrom,
         to,
         subject,
         html,
       });
-
       console.log('Custom email sent:', result);
       return { success: true, message: 'Email sent successfully' };
     } catch (error) {

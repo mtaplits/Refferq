@@ -12,8 +12,9 @@ export async function middleware(request: NextRequest) {
     // 1. Define protected routes
     const isAdminRoute = pathname.startsWith('/api/admin') || pathname.startsWith('/admin');
     const isAffiliateRoute = pathname.startsWith('/api/affiliate') || pathname.startsWith('/affiliate');
+    const isMeRoute = pathname === '/api/auth/me';
 
-    if (!isAdminRoute && !isAffiliateRoute) {
+    if (!isAdminRoute && !isAffiliateRoute && !isMeRoute) {
         return NextResponse.next();
     }
 
@@ -58,12 +59,14 @@ export async function middleware(request: NextRequest) {
             return NextResponse.redirect(new URL('/login', request.url));
         }
 
-        // 5. Inject user info into headers for API usage (optional but helpful)
-        const response = NextResponse.next();
-        response.headers.set('x-user-id', payload.userId as string);
-        response.headers.set('x-user-role', userRole);
+        // 5. Inject user info into the forwarded request headers so route handlers
+        //    can read x-user-id / x-user-role. Setting these on `response.headers`
+        //    sends them to the client instead of the handler, which is wrong.
+        const requestHeaders = new Headers(request.headers);
+        requestHeaders.set('x-user-id', payload.userId as string);
+        requestHeaders.set('x-user-role', userRole);
 
-        return response;
+        return NextResponse.next({ request: { headers: requestHeaders } });
     } catch (error) {
         if (pathname.startsWith('/api/')) {
             return NextResponse.json(
